@@ -210,6 +210,7 @@ class AgentLoop:
             reobserve_count = 0
             low_confidence_count = 0
             done_refuted_fingerprint: str | None = None
+            refuted_action_signatures: set[tuple[str | None, str]] = set()
             last_candidate_id: str | None = None
             repeat_count = 0
             prepared: tuple[PreparedText, ...] | None = None
@@ -291,6 +292,23 @@ class AgentLoop:
                         "Completion was already refuted on this exact state; "
                         "temporarily suppressing the done candidate."
                     )
+                if refuted_action_signatures:
+                    before_count = len(candidates)
+                    candidates = [
+                        candidate
+                        for candidate in candidates
+                        if (
+                            candidate.tool,
+                            candidate.description,
+                        )
+                        not in refuted_action_signatures
+                    ]
+                    suppressed = before_count - len(candidates)
+                    if suppressed:
+                        self._progress(
+                            f"Suppressing {suppressed} route(s) that were "
+                            "already tried and refuted without changing state."
+                        )
                 self._progress(
                     f"Built {len(candidates)} candidate action(s); asking Jev..."
                 )
@@ -729,6 +747,7 @@ class AgentLoop:
                 changed = state_changed(observation, after)
                 if changed:
                     done_refuted_fingerprint = None
+                    refuted_action_signatures.clear()
                 history.append(
                     StepRecord(
                         global_step,
@@ -782,6 +801,31 @@ class AgentLoop:
                         f"Subgoal {subgoal_index}/{len(plan.steps)} complete."
                     )
                     break
+
+                if not changed and candidate.tool is not None:
+                    refuted_action_signatures.add(
+                        (candidate.tool, candidate.description)
+                    )
+                    escalation = (
+                        action_result.get("escalation")
+                        if isinstance(action_result, dict)
+                        else None
+                    )
+                    recommended = None
+                    if isinstance(escalation, dict):
+                        recommended = (
+                            escalation.get("recommended")
+                            or escalation.get("target")
+                        )
+                    detail = (
+                        f" Driver recommends {recommended}."
+                        if recommended
+                        else ""
+                    )
+                    self._progress(
+                        "That route did not satisfy the verifier; trying an "
+                        f"alternate route next.{detail}"
+                    )
 
                 no_progress = 0 if changed else no_progress + 1
                 if no_progress >= 2 or repeat_count >= 3:
