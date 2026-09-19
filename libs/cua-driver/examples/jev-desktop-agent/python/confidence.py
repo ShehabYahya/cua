@@ -21,8 +21,8 @@ def assess_decision(
     candidates: list[Candidate],
     *,
     min_confidence: float,
-    probability_floor: float = 0.45,
-    min_margin: float = 0.15,
+    probability_floor: float = 0.35,
+    min_margin: float = 0.12,
 ) -> DecisionAssessment:
     """Assess a Jev choice without treating one absolute score as universal.
 
@@ -33,9 +33,11 @@ def assess_decision(
     confidence clears the caller threshold or when the returned categorical
     distribution has a clear winner above a conservative floor.
     """
-    ids = {candidate.id for candidate in candidates}
-    if decision.selected_id not in ids:
+    by_id = {candidate.id: candidate for candidate in candidates}
+    if decision.selected_id not in by_id:
         return DecisionAssessment(False, 0.0, 0.0, 0.0, "unknown candidate")
+    selected_candidate = by_id[decision.selected_id]
+    ids = set(by_id)
 
     selected_probability = float(
         decision.probabilities.get(
@@ -71,16 +73,26 @@ def assess_decision(
             "absolute confidence threshold",
         )
 
+    required_probability = probability_floor
+    required_margin = min_margin
+    if selected_candidate.risk == "confirm":
+        required_probability = max(required_probability, 0.55)
+        required_margin = max(required_margin, 0.20)
+
     if (
-        selected_probability >= probability_floor
-        and margin >= min_margin
+        selected_probability >= required_probability
+        and margin >= required_margin
     ):
         return DecisionAssessment(
             True,
             selected_probability,
             runner_up,
             margin,
-            "clear categorical winner",
+            (
+                "clear categorical winner"
+                if selected_candidate.risk == "safe"
+                else "clear consequential winner"
+            ),
         )
 
     return DecisionAssessment(
