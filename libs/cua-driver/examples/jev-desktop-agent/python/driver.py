@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import sys
 import tempfile
@@ -231,6 +232,27 @@ class CuaMcpDriver:
             raise RuntimeError(f"{name} failed: {result.content}")
         if not isinstance(data, dict):
             raise RuntimeError(f"{name} returned no structured result")
+
+        inline_images: list[dict[str, str]] = []
+        for part in result.content or []:
+            if getattr(part, "type", None) != "image":
+                continue
+            encoded = getattr(part, "data", None)
+            mime = (
+                getattr(part, "mimeType", None)
+                or getattr(part, "mime_type", None)
+            )
+            if (
+                isinstance(encoded, str)
+                and isinstance(mime, str)
+                and encoded
+            ):
+                inline_images.append(
+                    {"data": encoded, "mime_type": mime}
+                )
+        if inline_images:
+            data = dict(data)
+            data["__inline_images"] = inline_images
         return data
 
     async def health_warnings(self) -> tuple[str, ...]:
@@ -280,6 +302,40 @@ class CuaMcpDriver:
                 "bundled WinRects helper for full screenshot-grounded actions."
             )
         return tuple(warnings)
+
+    def _materialize_inline_image(
+        self,
+        state: Mapping[str, Any],
+        *,
+        stem: str,
+    ) -> str | None:
+        if not self._temp_dir:
+            return None
+        raw_images = state.get("__inline_images")
+        if not isinstance(raw_images, list) or not raw_images:
+            return None
+        first = raw_images[0]
+        if not isinstance(first, Mapping):
+            return None
+        encoded = first.get("data")
+        mime = str(first.get("mime_type") or "")
+        if not isinstance(encoded, str) or not encoded:
+            return None
+        suffix = ".jpg" if "jpeg" in mime.casefold() else ".png"
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except Exception:
+            return None
+        if not payload or len(payload) > 25 * 1024 * 1024:
+            return None
+        path = Path(self._temp_dir) / (
+            f"{stem}-{uuid.uuid4().hex[:8]}{suffix}"
+        )
+        try:
+            path.write_bytes(payload)
+        except OSError:
+            return None
+        return str(path)
 
     async def list_windows(self) -> list[dict[str, Any]]:
         args: dict[str, Any] = {}
@@ -387,6 +443,11 @@ class CuaMcpDriver:
                 candidate = state.get("screenshot_file_path") or proposed
                 if isinstance(candidate, str) and Path(candidate).is_file():
                     screenshot_path = candidate
+                if screenshot_path is None:
+                    screenshot_path = self._materialize_inline_image(
+                        state,
+                        stem="desktop",
+                    )
             except Exception:
                 screenshot_path = None
         return DesktopOverview(
@@ -664,6 +725,11 @@ class CuaMcpDriver:
                 proposed
                 if proposed and Path(proposed).is_file()
                 else None
+            )
+        if screenshot_path is None:
+            screenshot_path = self._materialize_inline_image(
+                state,
+                stem=f"window-{pid}-{window_id}",
             )
         capture_id = (
             state.get("capture_id")
