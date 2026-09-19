@@ -93,6 +93,81 @@ class CandidateTest(unittest.TestCase):
         self.assertEqual(candidate.arguments["ref"], "p1:7")
         self.assertEqual(candidate.arguments["input_route"], "dom_event")
 
+    def test_browser_pointer_right_click_uses_typed_route(self):
+        observation = Observation(
+            "s1",
+            7,
+            9,
+            "Chrome",
+            "Example",
+            (
+                Element(
+                    100001,
+                    None,
+                    "button",
+                    "Card menu",
+                    actions=("pointer",),
+                    source="browser",
+                    browser_ref="p1:9",
+                ),
+            ),
+            browser_target_id="bt-1",
+            browser_tab_id="tab-1",
+        )
+        candidate = next(
+            c
+            for c in build_candidates(
+                "right click the Card menu",
+                observation,
+            )
+            if c.id.startswith("browser-right_click-")
+        )
+        self.assertEqual(candidate.tool, "browser_pointer")
+        self.assertEqual(candidate.arguments["action"], "right_click")
+        self.assertEqual(candidate.arguments["ref"], "p1:9")
+
+    def test_browser_drag_builds_source_destination_pair(self):
+        observation = Observation(
+            "s1",
+            7,
+            9,
+            "Chrome",
+            "Board",
+            (
+                Element(
+                    100001,
+                    None,
+                    "item",
+                    "Report.pdf",
+                    actions=("pointer",),
+                    source="browser",
+                    browser_ref="p1:1",
+                ),
+                Element(
+                    100002,
+                    None,
+                    "region",
+                    "Archive",
+                    actions=("pointer",),
+                    source="browser",
+                    browser_ref="p1:2",
+                ),
+            ),
+            browser_target_id="bt-1",
+            browser_tab_id="tab-1",
+        )
+        candidate = next(
+            c
+            for c in build_candidates(
+                "drag Report.pdf to Archive",
+                observation,
+            )
+            if c.id == "browser-drag-100001-100002"
+        )
+        self.assertEqual(candidate.arguments["action"], "drag")
+        self.assertEqual(candidate.arguments["ref"], "p1:1")
+        self.assertEqual(candidate.arguments["destination_ref"], "p1:2")
+
     def test_password_field_is_never_offered_for_typing(self):
         observation = Observation(
             "s1", 7, 9, "App", "Login",
