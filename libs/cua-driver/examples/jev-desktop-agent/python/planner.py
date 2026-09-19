@@ -36,6 +36,16 @@ class PassThroughPlanner:
         if desktop is None:
             return None
         normalized = goal.casefold()
+        aliases = (
+            ("firefox", "Firefox"),
+            ("google chrome", "Google Chrome"),
+            ("chrome", "Google Chrome"),
+            ("chromium", "Chromium"),
+            ("terminal", "Terminal"),
+            ("files", "Files"),
+            ("file manager", "Files"),
+            ("settings", "Settings"),
+        )
         names: list[str] = []
         for raw in (*desktop.windows, *desktop.apps):
             name = raw.get("app_name") or raw.get("name")
@@ -56,6 +66,9 @@ class PassThroughPlanner:
                 for token in tokens
             ):
                 return name
+        for phrase, app_name in aliases:
+            if re.search(rf"\b{re.escape(phrase)}\b", normalized):
+                return app_name
         return None
 
     async def plan(
