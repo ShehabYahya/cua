@@ -102,17 +102,25 @@ class OpenRouterClient:
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
             "provider": {
                 "data_collection": "deny",
                 "zdr": True,
                 "allow_fallbacks": True,
+                "require_parameters": True,
             },
         }
         body = self._post(CHAT_ENDPOINT, payload)
         try:
-            content_out = body["choices"][0]["message"]["content"]
+            message = body["choices"][0]["message"]
         except (KeyError, IndexError, TypeError):
-            raise RuntimeError("OpenRouter chat response has no message content") from None
+            raise RuntimeError("OpenRouter chat response has no message") from None
+        if not isinstance(message, dict):
+            raise RuntimeError("OpenRouter chat response message is malformed")
+
+        content_out = message.get("content")
+        if isinstance(content_out, dict):
+            return content_out
         if isinstance(content_out, list):
             text_parts = [
                 part.get("text", "")
@@ -120,8 +128,17 @@ class OpenRouterClient:
                 if isinstance(part, dict) and isinstance(part.get("text"), str)
             ]
             content_out = "\n".join(text_parts)
-        if not isinstance(content_out, str):
-            raise RuntimeError("OpenRouter chat response content is not text")
+        if not isinstance(content_out, str) or not content_out.strip():
+            # Some reasoning providers can put the final textual payload in a
+            # reasoning field while leaving content null. Accept it only when
+            # it is itself valid JSON; never expose raw reasoning text.
+            reasoning = message.get("reasoning")
+            if isinstance(reasoning, str) and reasoning.strip():
+                try:
+                    return _extract_json(reasoning)
+                except ValueError:
+                    pass
+            raise RuntimeError("OpenRouter chat response has no JSON text content")
         return _extract_json(content_out)
 
     def transcribe_wav(
