@@ -33,6 +33,16 @@ class ResourceTest(unittest.TestCase):
             changed = tracker.changed(before, tracker.snapshot())
             self.assertEqual([item.name for item in changed], ["renamed.pdf"])
 
+    def test_tracks_nested_download_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tracker = DownloadTracker(tmp)
+            nested = Path(tmp) / "Telegram Desktop"
+            nested.mkdir()
+            path = nested / "report.pdf"
+            path.write_bytes(b"pdf")
+            snapshot = tracker.snapshot()
+            self.assertIn(str(path.resolve()), snapshot)
+
     def test_ignores_partial_downloads(self):
         with tempfile.TemporaryDirectory() as tmp:
             tracker = DownloadTracker(tmp)
