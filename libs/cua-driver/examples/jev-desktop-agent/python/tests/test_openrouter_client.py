@@ -44,6 +44,13 @@ class ClientTest(unittest.TestCase):
             captured["body"]["provider"]["data_collection"],
             "deny",
         )
+        self.assertEqual(
+            captured["body"]["response_format"],
+            {"type": "json_object"},
+        )
+        self.assertTrue(
+            captured["body"]["provider"]["require_parameters"]
+        )
 
 
 if __name__ == "__main__":
