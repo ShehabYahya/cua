@@ -113,10 +113,12 @@ def _is_clickable(element: Element) -> bool:
     role = _role_key(element.role)
     if role in CLICK_ROLES:
         return True
+    actions = " ".join(element.actions).casefold()
+    if any(word in actions for word in ACTIVATION_WORDS):
+        return True
     if role in PASSIVE_ROLES:
         return False
-    actions = " ".join(element.actions).casefold()
-    return any(word in actions for word in ACTIVATION_WORDS)
+    return False
 
 
 def _is_typeable(element: Element) -> bool:
@@ -153,6 +155,12 @@ def _hotkey_candidates(
         ),
         (("copy",), "hotkey-copy", ["ctrl", "c"], "Copy the current selection."),
         (("paste",), "hotkey-paste", ["ctrl", "v"], "Paste clipboard contents."),
+        (("undo",), "hotkey-undo", ["ctrl", "z"], "Undo the last action."),
+        (("redo",), "hotkey-redo", ["ctrl", "shift", "z"], "Redo the last undone action."),
+        (("new window",), "hotkey-new-window", ["ctrl", "n"], "Open a new window."),
+        (("open file", "open document"), "hotkey-open-file", ["ctrl", "o"], "Open the application's file-open dialog."),
+        (("next tab",), "hotkey-next-tab", ["ctrl", "tab"], "Switch to the next tab."),
+        (("previous tab", "prior tab"), "hotkey-previous-tab", ["ctrl", "shift", "tab"], "Switch to the previous tab."),
         (("go back", "back"), "hotkey-back", ["alt", "left"], "Go back."),
     ]
     out: list[Candidate] = []
@@ -193,6 +201,41 @@ def _hotkey_candidates(
                 "Press Escape in the target window.",
                 "press_key",
                 {**_window_target(observation), "key": "escape"},
+                snapshot_id=observation.snapshot_id,
+                source="shortcut",
+            )
+        )
+    if "rename" in normalized:
+        out.append(
+            Candidate(
+                "press-rename",
+                "Press F2 to rename the current selection.",
+                "press_key",
+                {**_window_target(observation), "key": "f2"},
+                snapshot_id=observation.snapshot_id,
+                source="shortcut",
+            )
+        )
+    if "delete" in normalized or "remove" in normalized:
+        out.append(
+            apply_risk(
+                Candidate(
+                    "press-delete",
+                    "Delete the current selection.",
+                    "press_key",
+                    {**_window_target(observation), "key": "delete"},
+                    snapshot_id=observation.snapshot_id,
+                    source="shortcut",
+                )
+            )
+        )
+    if "next field" in normalized or "tab to" in normalized:
+        out.append(
+            Candidate(
+                "press-tab",
+                "Move keyboard focus to the next field.",
+                "press_key",
+                {**_window_target(observation), "key": "tab"},
                 snapshot_id=observation.snapshot_id,
                 source="shortcut",
             )
@@ -378,6 +421,39 @@ def build_candidates(
                     )
                 )
             )
+            normalized_goal = goal.casefold()
+            if "double click" in normalized_goal or (
+                "open" in normalized_goal
+                and _role_key(element.role) in {
+                    "listitem",
+                    "treeitem",
+                    "tablecell",
+                    "row",
+                }
+            ):
+                candidates.append(
+                    apply_risk(
+                        Candidate(
+                            id=f"double-click-{element.index}",
+                            description=f'Double-click {element.role} "{element.label}".',
+                            tool="double_click",
+                            arguments=_element_target(observation, element),
+                            snapshot_id=observation.snapshot_id,
+                            source="semantic",
+                        )
+                    )
+                )
+            if "right click" in normalized_goal or "context menu" in normalized_goal:
+                candidates.append(
+                    Candidate(
+                        id=f"right-click-{element.index}",
+                        description=f'Open the context menu for {element.role} "{element.label}".',
+                        tool="right_click",
+                        arguments=_element_target(observation, element),
+                        snapshot_id=observation.snapshot_id,
+                        source="semantic",
+                    )
+                )
         if (
             _is_typeable(element)
             and prepared_texts
@@ -405,6 +481,40 @@ def build_candidates(
                         field_label=element.label,
                     )
                 )
+
+    has_type_candidate = any(
+        candidate.id.startswith("type-")
+        or candidate.id.startswith("browser-type-")
+        for candidate in candidates
+    )
+    normalized_goal = goal.casefold()
+    if (
+        prepared_texts
+        and not has_type_candidate
+        and any(
+            word in normalized_goal
+            for word in ("type", "write", "enter", "command", "paste")
+        )
+        and not field_is_sensitive(goal)
+        and len(candidates) < action_limit
+    ):
+        slot = prepared_texts[0]
+        candidates.append(
+            Candidate(
+                id=f"type-focused-{slot.id}",
+                description=(
+                    f"Type prepared text {slot.id} into the current "
+                    "editable/focused control in the target window."
+                ),
+                tool="type_text",
+                arguments={
+                    **_window_target(observation),
+                    "text": slot.text,
+                },
+                snapshot_id=observation.snapshot_id,
+                source="keyboard",
+            )
+        )
 
     for extra in (
         _hotkey_candidates(goal, observation)
