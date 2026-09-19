@@ -65,6 +65,7 @@ class Element:
     actions: tuple[str, ...] = ()
     bounds: Rect | None = None
     source: str = "accessibility"
+    browser_ref: str | None = None
 
     def compact(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -124,6 +125,10 @@ class Observation:
     degraded: bool = False
     truncated: bool = False
     visual_summary: str | None = None
+    browser_target_id: str | None = None
+    browser_tab_id: str | None = None
+    browser_url: str | None = None
+    browser_title: str | None = None
 
     def compact(self, *, limit: int = 96, visual_limit: int = 32) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -142,6 +147,11 @@ class Observation:
             payload["visual_summary"] = self.visual_summary[:1200]
         if self.capture_id:
             payload["capture_id"] = self.capture_id
+        if self.browser_url or self.browser_title:
+            payload["browser_page"] = {
+                "url": self.browser_url,
+                "title": self.browser_title,
+            }
         if self.screenshot_error:
             payload["screenshot_error"] = self.screenshot_error[:300]
         return payload
@@ -155,6 +165,8 @@ class Observation:
                 for e in self.elements[:250]
             ],
             "visual": [[r.label, r.kind] for r in self.visual_regions[:80]],
+            "browser_url": self.browser_url,
+            "browser_title": self.browser_title,
         }
         raw = json.dumps(material, sort_keys=True, ensure_ascii=False).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()[:20]
