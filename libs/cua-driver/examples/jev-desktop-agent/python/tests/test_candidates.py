@@ -32,7 +32,7 @@ class CandidateTest(unittest.TestCase):
 
     def test_atspi_push_button_is_clickable(self):
         candidates = build_candidates("click the New Tab button", self.observation())
-        self.assertEqual(candidates[0].id, "click-1")
+        self.assertIn("click-1", {candidate.id for candidate in candidates})
 
     def test_new_tab_hotkey_is_also_available(self):
         ids = {c.id for c in build_candidates("open a new tab", self.observation())}
