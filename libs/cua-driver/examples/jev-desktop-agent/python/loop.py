@@ -193,6 +193,7 @@ class AgentLoop:
         self._progress("Reading desktop state...")
         desktop = await self._driver.desktop_overview(
             include_screenshot=not direct_mode,
+            include_apps=not direct_mode,
         )
         self._progress(
             f"Desktop ready: {len(desktop.windows)} visible window(s), "
