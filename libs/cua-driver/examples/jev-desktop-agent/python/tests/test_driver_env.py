@@ -71,5 +71,17 @@ class DriverEnvironmentTest(unittest.TestCase):
             self.assertEqual(Path(path).read_bytes(), payload)
 
 
+    def test_missing_capture_binding_is_a_capability_limit_not_health_failure(self) -> None:
+        driver = CuaMcpDriver()
+        driver._tool_schemas = {
+            "get_window_state": {"properties": {}},
+            "click": {"properties": {}},
+        }
+        driver.capture_bound_click = False
+        limitations = driver.capability_limitations()
+        self.assertTrue(
+            any("capture-bound raw pixel clicks" in item for item in limitations)
+        )
+
 if __name__ == "__main__":
     unittest.main()
