@@ -106,9 +106,29 @@ def parser() -> argparse.ArgumentParser:
             DEFAULT_REASONING_MODEL,
         ),
     )
-    result.add_argument("--no-planner", action="store_true")
+    result.add_argument(
+        "--planner",
+        action="store_true",
+        help=(
+            "opt in to OpenRouter task decomposition; default is one direct "
+            "goal with no planner model call"
+        ),
+    )
+    result.add_argument(
+        "--no-planner",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     result.add_argument("--no-vision", action="store_true")
     result.add_argument("--no-verifier", action="store_true")
+    result.add_argument(
+        "--verify-every-action",
+        action="store_true",
+        help=(
+            "run the full verifier after every mutation; slower than the "
+            "default direct loop, which verifies remotely only when Jev says done"
+        ),
+    )
     result.add_argument(
         "--download-root",
         default=os.getenv("JEV_DESKTOP_DOWNLOAD_ROOT"),
@@ -201,12 +221,16 @@ async def main_async(args: argparse.Namespace) -> int:
     if os.getenv("OPENROUTER_API_KEY", "").strip():
         openrouter = OpenRouterClient()
     planner = (
-        PassThroughPlanner()
-        if args.no_planner or openrouter is None
-        else OpenRouterPlanner(
+        OpenRouterPlanner(
             openrouter,
             model=args.planner_model,
         )
+        if (
+            args.planner
+            and not args.no_planner
+            and openrouter is not None
+        )
+        else PassThroughPlanner()
     )
     perceiver = (
         NoopPerceiver()
@@ -259,6 +283,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 )
             ),
             progress=None if args.quiet else _progress_printer,
+            verify_every_action=args.verify_every_action,
         )
         try:
             if args.voice:
