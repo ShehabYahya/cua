@@ -179,7 +179,18 @@ def _hotkey_candidates(
                     )
                 )
             )
-    if any(word in normalized for word in ("enter", "submit", "confirm", "open")):
+    if any(
+        word in normalized
+        for word in (
+            "enter",
+            "submit",
+            "confirm",
+            "open",
+            "search",
+            "navigate",
+            "rename",
+        )
+    ):
         out.append(
             apply_risk(
                 Candidate(
