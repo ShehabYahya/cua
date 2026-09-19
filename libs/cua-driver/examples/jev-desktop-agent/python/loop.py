@@ -52,6 +52,7 @@ class AgentLoop:
         max_candidates: int = 96,
         min_confidence: float = 0.55,
         max_repairs_per_subgoal: int = 2,
+        download_root: str | None = None,
     ) -> None:
         self._driver = driver
         self._chooser = chooser
@@ -63,6 +64,7 @@ class AgentLoop:
         self._max_candidates = max_candidates
         self._min_confidence = min_confidence
         self._max_repairs = max_repairs_per_subgoal
+        self._download_root = download_root
         self._recent_context: list[str] = []
 
     @property
@@ -214,6 +216,7 @@ class AgentLoop:
                     prepared_texts=prepared,
                     max_candidates=self._max_candidates,
                     allow_visual_clicks=self._driver.capture_bound_click,
+                    download_root=self._download_root,
                 )
                 decision_goal = redact_prepared_text(
                     current.goal,
