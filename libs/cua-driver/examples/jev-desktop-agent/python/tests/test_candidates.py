@@ -7,51 +7,72 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from candidates import build_candidates
-from contracts import Element, Observation
-from writer import quoted_text_slots
+from contracts import Element, Observation, Rect, VisualRegion
+from writer import PreparedText
 
 
 class CandidateTest(unittest.TestCase):
-    def observation(self) -> Observation:
+    def observation(self, *, capture_id=None, visual=()):
         return Observation(
             snapshot_id="s1",
             pid=7,
             window_id=9,
-            app="Browser",
+            app="Firefox",
             window_title="Example",
             elements=(
-                Element(1, "s1:1", "Button", "Cancel"),
-                Element(2, "s1:2", "Button", "Download report"),
-                Element(3, "s1:3", "TextField", "Search"),
+                Element(1, "s1:1", "push button", "New Tab", actions=("click",)),
+                Element(2, "s1:2", "entry", "Address and Search"),
+                Element(3, "s1:3", "label", "Decorative"),
             ),
+            visual_regions=visual,
+            capture_id=capture_id,
+            screenshot_width=1000,
+            screenshot_height=800,
         )
 
-    def test_goal_overlap_prioritizes_relevant_element_and_keeps_reserved(self) -> None:
-        candidates = build_candidates(
-            "download the report", self.observation(), max_candidates=4
-        )
-        self.assertEqual(candidates[0].id, "click-2")
-        self.assertEqual(
-            [candidate.id for candidate in candidates[-2:]],
-            ["reobserve", "abstain"],
-        )
-        self.assertLessEqual(len(candidates), 4)
+    def test_atspi_push_button_is_clickable(self):
+        candidates = build_candidates("click the New Tab button", self.observation())
+        self.assertEqual(candidates[0].id, "click-1")
 
-    def test_prepared_text_stays_in_local_arguments(self) -> None:
-        slots = quoted_text_slots('search for "Alan Turing"')
+    def test_new_tab_hotkey_is_also_available(self):
+        ids = {c.id for c in build_candidates("open a new tab", self.observation())}
+        self.assertIn("hotkey-new-tab", ids)
+
+    def test_prepared_text_is_local_argument_only(self):
         candidates = build_candidates(
-            'search for "Alan Turing"',
+            "search for the person",
             self.observation(),
-            prepared_texts=slots,
+            prepared_texts=(PreparedText("text-1", "Alan Turing"),),
         )
-        typed = next(candidate for candidate in candidates if candidate.id.startswith("type-"))
+        typed = next(c for c in candidates if c.id.startswith("type-2"))
         self.assertEqual(typed.arguments["text"], "Alan Turing")
         self.assertNotIn("Alan Turing", typed.description)
 
-    def test_candidate_arguments_are_immutable(self) -> None:
-        candidate = build_candidates("download", self.observation())[0]
-        with self.assertRaises(TypeError):
-            candidate.arguments["delivery_mode"] = "foreground"
+    def test_capture_bound_visual_candidate(self):
+        visual = (
+            VisualRegion("v1", "Icon only action", "button", Rect(100, 200, 40, 20), 0.9),
+        )
+        candidates = build_candidates(
+            "activate icon only action",
+            self.observation(capture_id="c1", visual=visual),
+            allow_visual_clicks=True,
+        )
+        candidate = next(c for c in candidates if c.id == "visual-v1")
+        self.assertEqual(candidate.capture_id, "c1")
+        self.assertEqual(candidate.arguments["x"], 120.0)
+        self.assertEqual(candidate.arguments["y"], 210.0)
+
+    def test_password_field_is_never_offered_for_typing(self):
+        observation = Observation(
+            "s1", 7, 9, "App", "Login",
+            (Element(1, "s1:1", "entry", "Password"),),
+        )
+        candidates = build_candidates(
+            "type the password",
+            observation,
+            prepared_texts=(PreparedText("text-1", "secret"),),
+        )
+        self.assertFalse(any(c.id.startswith("type-") for c in candidates))
 
 
 if __name__ == "__main__":
