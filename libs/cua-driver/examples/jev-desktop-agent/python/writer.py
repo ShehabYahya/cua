@@ -34,6 +34,37 @@ def quoted_text_slots(goal: str, *, limit: int = 4) -> tuple[PreparedText, ...]:
     return tuple(slots)
 
 
+def inferred_text_slots(
+    goal: str,
+    *,
+    limit: int = 2,
+) -> tuple[PreparedText, ...]:
+    quoted = quoted_text_slots(goal, limit=limit)
+    if quoted:
+        return quoted
+
+    patterns = (
+        (
+            "search",
+            r"\bsearch(?:\s+the\s+(?:web|internet))?\s+for\s+(.+?)"
+            r"(?=,\s*(?:and|then)\b|\s+(?:and|then)\s+stop\b|$)",
+        ),
+        (
+            "rename",
+            r"\brename\b.+?\bto\s+([^,]+?)"
+            r"(?=,\s*(?:and|then)\b|$)",
+        ),
+    )
+    for source, pattern in patterns:
+        match = re.search(pattern, goal, flags=re.IGNORECASE)
+        if not match:
+            continue
+        value = match.group(1).strip(" \t\r\n.?!")
+        if value:
+            return (PreparedText("text-1", value, f"user-{source}"),)
+    return ()
+
+
 def redact_prepared_text(goal: str, slots: tuple[PreparedText, ...]) -> str:
     redacted = goal
     for slot in slots:
@@ -80,7 +111,7 @@ class OpenRouterWriter:
     ) -> tuple[PreparedText, ...]:
         import asyncio
 
-        user_slots = quoted_text_slots(original_goal)
+        user_slots = inferred_text_slots(original_goal)
         slots: list[PreparedText] = list(user_slots)
         if step.text and all(item.text != step.text for item in slots):
             slots.append(PreparedText(f"text-{len(slots) + 1}", step.text, "planner"))
