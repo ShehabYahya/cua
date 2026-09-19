@@ -968,6 +968,23 @@ class AgentLoop:
 
                 no_progress = 0 if changed else no_progress + 1
                 if no_progress >= 2 or repeat_count >= 3:
+                    if direct_mode:
+                        result = RunResult(
+                            "stalled",
+                            tuple(history),
+                            (
+                                verification.reason
+                                or (
+                                    "Direct mode made no progress after multiple "
+                                    "distinct bounded attempts; stopping instead "
+                                    "of entering a planner/retry loop."
+                                )
+                            ),
+                            plan,
+                            completed_subgoals,
+                        )
+                        self._remember(goal, result)
+                        return result
                     if repairs < self._max_repairs:
                         current = await self._planner.repair_step(
                             original_goal=goal,
