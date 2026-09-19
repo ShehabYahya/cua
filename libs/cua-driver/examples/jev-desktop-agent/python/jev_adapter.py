@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
-from typing import Any
+import os
+import urllib.error
+import urllib.request
+from typing import Any, Callable
 
 from contracts import Candidate, Decision, Observation, StepRecord
+
+OPENROUTER_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
+OPENROUTER_MODEL = "~typesafe/jev-latest"
 
 
 def _criteria(candidates: list[Candidate]) -> dict[str, str]:
@@ -25,8 +32,20 @@ def _history(history: list[StepRecord]) -> list[dict[str, Any]]:
     ]
 
 
+def _state(
+    goal: str,
+    observation: Observation,
+    history: list[StepRecord],
+) -> dict[str, Any]:
+    return {
+        "goal": goal,
+        "observation": observation.compact(),
+        "history": _history(history),
+    }
+
+
 class TypeSafeChooser:
-    """Jev receives descriptions and IDs only; executable arguments stay local."""
+    """Direct TypeSafe route. Executable arguments stay local."""
 
     def __init__(self, client: Any | None = None) -> None:
         self._client = client
@@ -58,11 +77,7 @@ class TypeSafeChooser:
 
         criteria = _criteria(candidates)
         request = {
-            "state": {
-                "goal": goal,
-                "observation": observation.compact(),
-                "history": _history(history),
-            },
+            "state": _state(goal, observation, history),
             "questions": {
                 "driver_action": Choice(
                     instructions=(
@@ -102,3 +117,148 @@ class TypeSafeChooser:
             probabilities=probabilities,
             model=model if isinstance(model, str) else None,
         )
+
+
+class OpenRouterChooser:
+    """OpenRouter Decisions API route for TypeSafe Jev."""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = OPENROUTER_MODEL,
+        timeout: float = 10.0,
+        opener: Callable[..., Any] | None = None,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("OPENROUTER_API_KEY is empty")
+        self._api_key = api_key
+        self._model = model
+        self._timeout = timeout
+        self._opener = opener or urllib.request.urlopen
+
+    async def choose(
+        self,
+        *,
+        goal: str,
+        observation: Observation,
+        candidates: list[Candidate],
+        history: list[StepRecord],
+    ) -> Decision:
+        return await asyncio.to_thread(
+            self._choose_sync,
+            goal,
+            observation,
+            candidates,
+            history,
+        )
+
+    def _choose_sync(
+        self,
+        goal: str,
+        observation: Observation,
+        candidates: list[Candidate],
+        history: list[StepRecord],
+    ) -> Decision:
+        criteria = _criteria(candidates)
+        payload = {
+            "model": self._model,
+            "state": _state(goal, observation, history),
+            "questions": {
+                "driver_action": {
+                    "type": "choice",
+                    "instructions": (
+                        "Select exactly one supplied candidate ID for the next desktop step."
+                    ),
+                    "criteria": criteria,
+                }
+            },
+            # Keep the decision request on a privacy-restricted OpenRouter route.
+            "provider": {
+                "data_collection": "deny",
+                "zdr": True,
+                "allow_fallbacks": False,
+            },
+        }
+        request = urllib.request.Request(
+            OPENROUTER_ENDPOINT,
+            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+
+        try:
+            with self._opener(request, timeout=self._timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            # Never include the response body: it may echo private request data.
+            raise RuntimeError(f"OpenRouter Jev HTTP {error.code}") from None
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            raise RuntimeError("OpenRouter Jev request failed") from None
+
+        answers = body.get("answers")
+        if not isinstance(answers, dict):
+            raise ValueError("OpenRouter Jev response has no answers object")
+        answer = answers.get("driver_action")
+        if not isinstance(answer, dict):
+            raise ValueError("OpenRouter Jev response has no driver_action answer")
+
+        selected = answer.get("choice")
+        if selected not in criteria:
+            raise ValueError(f"Jev selected unknown candidate: {selected}")
+
+        raw_probabilities = answer.get("probabilities")
+        if not isinstance(raw_probabilities, dict):
+            raise ValueError("OpenRouter Jev returned no probability distribution")
+        probabilities: dict[str, float] = {}
+        for candidate_id, raw in raw_probabilities.items():
+            if candidate_id not in criteria:
+                raise ValueError(f"Jev scored unknown candidate: {candidate_id}")
+            value = float(raw)
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError("OpenRouter Jev returned invalid probability")
+            probabilities[candidate_id] = value
+
+        selected_probability = probabilities.get(str(selected))
+        if selected_probability is None:
+            raise ValueError("OpenRouter Jev omitted the selected candidate probability")
+        confidence_raw = answer.get("confidence", selected_probability)
+        confidence = float(confidence_raw)
+        if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+            raise ValueError("OpenRouter Jev returned invalid confidence")
+
+        model = body.get("model")
+        return Decision(
+            selected_id=str(selected),
+            confidence=confidence,
+            probabilities=probabilities,
+            model=model if isinstance(model, str) else self._model,
+        )
+
+
+def chooser_from_env(provider: str = "auto") -> TypeSafeChooser | OpenRouterChooser:
+    if provider not in {"auto", "openrouter", "typesafe"}:
+        raise ValueError("provider must be auto, openrouter, or typesafe")
+
+    if provider in {"auto", "openrouter"}:
+        key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        if key:
+            return OpenRouterChooser(
+                key,
+                model=os.getenv("JEV_MODEL", "").strip() or OPENROUTER_MODEL,
+            )
+        if provider == "openrouter":
+            raise ValueError("set OPENROUTER_API_KEY in the environment")
+
+    if provider in {"auto", "typesafe"}:
+        if os.getenv("TYPESAFE_API_KEY", "").strip():
+            return TypeSafeChooser()
+        if provider == "typesafe":
+            raise ValueError("set TYPESAFE_API_KEY in the environment")
+
+    raise ValueError(
+        "no Jev credential found; set OPENROUTER_API_KEY or TYPESAFE_API_KEY"
+    )

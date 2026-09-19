@@ -40,6 +40,34 @@ semantic observation, recent outcomes, and candidate IDs/descriptions only.
 Prepared quoted text also stays local; Jev sees a slot ID rather than the text
 value.
 
+## Provider credentials
+
+The scaffold supports Jev directly through TypeSafe or through OpenRouter.
+
+OpenRouter:
+
+```bash
+export OPENROUTER_API_KEY="..."
+# Optional; this is the default OpenRouter Jev alias:
+export JEV_MODEL="~typesafe/jev-latest"
+```
+
+The OpenRouter route uses `POST https://openrouter.ai/api/alpha/decisions`.
+It is intentionally not sent to the ordinary `/api/v1` chat endpoint. The
+request also asks OpenRouter for no data collection, ZDR, and no provider
+fallback.
+
+Direct TypeSafe:
+
+```bash
+export TYPESAFE_API_KEY="..."
+```
+
+`--provider auto` is the default and prefers `OPENROUTER_API_KEY` when both
+credentials are present. Use `--provider openrouter` or `--provider typesafe`
+to pin the route. Never put either key in source, command arguments, logs, or
+chat messages.
+
 ## Files
 
 - `python/contracts.py` — immutable observations, candidates, decisions, and the
@@ -47,7 +75,7 @@ value.
 - `python/candidates.py` — bounded dynamic action generation from the current
   accessibility snapshot.
 - `python/driver.py` — persistent Cua Driver MCP adapter.
-- `python/jev_adapter.py` — bounded TypeSafe chooser.
+- `python/jev_adapter.py` — bounded TypeSafe and OpenRouter Jev routes.
 - `python/loop.py` — one-action-per-observation agent loop.
 - `python/planner.py` — Phase-1 pass-through planner interface.
 - `python/writer.py` — local prepared-text slots; no model-generated text yet.
@@ -58,31 +86,40 @@ value.
 
 ```bash
 cd libs/cua-driver/examples/jev-desktop-agent
-python -m unittest discover -s python/tests
+uv run python -m unittest discover -s python/tests -v
 ```
 
 The tests are credential-free and do not touch the desktop.
 
 ## Try the live semantic loop
 
-Install the same prerequisites as `../jev-use`, set `TYPESAFE_API_KEY`, and keep
-Cua Driver running in the target graphical session. Start with dry-run:
+Install the same Cua Driver prerequisites as `../jev-use`, keep Cua Driver
+running in the target graphical session, and start with a dry-run.
+
+With OpenRouter:
 
 ```bash
-uv sync
-uv run python/cli.py "click the Downloads button" --app Firefox
+export OPENROUTER_API_KEY="..."
+uv run python/cli.py "click the New Tab button" --app Firefox --provider openrouter
+```
+
+With direct TypeSafe:
+
+```bash
+export TYPESAFE_API_KEY="..."
+uv run python/cli.py "click the New Tab button" --app Firefox --provider typesafe
 ```
 
 Only add `--act` after inspecting the selected action:
 
 ```bash
-uv run python/cli.py "click the Downloads button" --app Firefox --act --max-steps 3
+uv run python/cli.py "click the New Tab button" --app Firefox \
+  --provider openrouter --act --max-steps 1
 ```
 
 The live path currently refuses degraded/truncated semantic observations instead
-of guessing from pixels. It also has no goal-completion verifier yet, so an
-acting run normally ends at the step budget unless Jev abstains or becomes
-uncertain.
+of guessing from pixels. It also has no goal-completion verifier yet, so keep
+acting tests to `--max-steps 1` until independent completion checks land.
 
 ## Next increments
 

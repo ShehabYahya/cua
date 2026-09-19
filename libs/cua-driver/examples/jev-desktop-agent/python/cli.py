@@ -5,7 +5,7 @@ import asyncio
 import json
 
 from driver import CuaMcpDriver
-from jev_adapter import TypeSafeChooser
+from jev_adapter import chooser_from_env
 from loop import AgentLoop
 
 
@@ -15,6 +15,12 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("goal", help="natural-language desktop goal")
     result.add_argument("--app", help="limit observation to a matching app/window")
+    result.add_argument(
+        "--provider",
+        choices=["auto", "openrouter", "typesafe"],
+        default="auto",
+        help="Jev provider; auto prefers OPENROUTER_API_KEY when present",
+    )
     result.add_argument(
         "--act",
         action="store_true",
@@ -26,10 +32,15 @@ def parser() -> argparse.ArgumentParser:
 
 
 async def main_async(args: argparse.Namespace) -> int:
+    try:
+        chooser = chooser_from_env(args.provider)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+
     async with CuaMcpDriver() as driver:
         agent = AgentLoop(
             driver,
-            TypeSafeChooser(),
+            chooser,
             max_steps=args.max_steps,
             min_confidence=args.min_confidence,
         )
