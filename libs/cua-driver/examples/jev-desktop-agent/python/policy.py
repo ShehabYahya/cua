@@ -75,6 +75,26 @@ def field_is_sensitive(label: str) -> bool:
     return any(_has_phrase(normalized, word) for word in DENY_FIELD_WORDS)
 
 
+def sensitive_text_intent(text: str) -> bool:
+    normalized = _normalized(text)
+    if not any(_has_phrase(normalized, word) for word in DENY_FIELD_WORDS):
+        return False
+    return any(
+        _has_phrase(normalized, verb)
+        for verb in (
+            "enter",
+            "type",
+            "fill",
+            "write",
+            "paste",
+            "input",
+            "use",
+            "set",
+            "submit",
+        )
+    )
+
+
 def classify_risk(description: str, *, tool: str | None, field_label: str = "") -> str:
     if tool == "type_text" and field_is_sensitive(field_label):
         return "deny"
