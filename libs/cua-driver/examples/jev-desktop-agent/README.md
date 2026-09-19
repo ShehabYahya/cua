@@ -213,10 +213,11 @@ uv run python/cli.py --voice --speak --provider openrouter --allow-foreground
 
 Voice mode listens until you finish speaking, sends the WAV to OpenRouter's
 transcription endpoint, runs the same desktop agent, and asks for a spoken yes/no
-before consequential actions. Say `stop listening` or `goodbye` to exit
-between commands. Ctrl-C remains the immediate interrupt while a command is
-actively executing; continuous spoken barge-in during an in-flight provider/tool
-call is not implemented in v1.
+before consequential actions. While a command is running, a parallel microphone
+monitor accepts spoken `cancel`, `stop`, `stop now`, or `never mind`; the
+agent stops before the next action (or immediately after the current atomic
+Driver/provider call returns). Say `stop listening` or `goodbye` between
+commands to exit the voice session. Ctrl-C remains an immediate local interrupt.
 
 **Privacy note:** screenshot/chat requests use OpenRouter's no-data-collection +
 ZDR routing controls. OpenRouter's transcription endpoint currently does not
