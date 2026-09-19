@@ -62,6 +62,37 @@ class CandidateTest(unittest.TestCase):
         self.assertEqual(candidate.arguments["x"], 120.0)
         self.assertEqual(candidate.arguments["y"], 210.0)
 
+
+    def test_browser_semantic_ref_uses_typed_browser_tool(self):
+        observation = Observation(
+            "s1",
+            7,
+            9,
+            "Chrome",
+            "Example",
+            (
+                Element(
+                    100001,
+                    None,
+                    "button",
+                    "Search",
+                    actions=("click",),
+                    source="browser",
+                    browser_ref="p1:7",
+                ),
+            ),
+            browser_target_id="bt-1",
+            browser_tab_id="tab-1",
+        )
+        candidate = next(
+            c
+            for c in build_candidates("click Search", observation)
+            if c.id.startswith("browser-click-")
+        )
+        self.assertEqual(candidate.tool, "browser_click")
+        self.assertEqual(candidate.arguments["ref"], "p1:7")
+        self.assertEqual(candidate.arguments["input_route"], "dom_event")
+
     def test_password_field_is_never_offered_for_typing(self):
         observation = Observation(
             "s1", 7, 9, "App", "Login",
