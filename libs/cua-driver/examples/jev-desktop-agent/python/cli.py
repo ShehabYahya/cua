@@ -2,24 +2,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import os
 import sys
-from pathlib import Path
 
 from contracts import Candidate
-from driver import CuaMcpDriver
-from jev_adapter import chooser_from_env
-from loop import AgentLoop, RunResult
-from openrouter_client import (
-    DEFAULT_REASONING_MODEL,
-    DEFAULT_STT_MODEL,
-    OpenRouterClient,
-)
-from perception import NoopPerceiver, OpenRouterVisionPerceiver
-from voice import VoiceAssistant
-from writer import OpenRouterWriter
+from events import RuntimeEvent
+from loop import RunResult
+from openrouter_client import DEFAULT_REASONING_MODEL, DEFAULT_STT_MODEL
+from runtime import PorterRuntime, PorterRuntimeConfig
 
 
 def parser() -> argparse.ArgumentParser:
@@ -148,8 +139,9 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def _progress_printer(message: str) -> None:
-    print(f"[agent] {message}", file=sys.stderr, flush=True)
+def _runtime_event_printer(event: RuntimeEvent) -> None:
+    if event.kind == "agent_progress" and event.message:
+        print(f"[agent] {event.message}", file=sys.stderr, flush=True)
 
 
 async def _terminal_confirm(candidate: Candidate) -> bool:
@@ -172,89 +164,32 @@ def _result_json(result: RunResult) -> dict:
 
 async def main_async(args: argparse.Namespace) -> int:
     if args.check:
-        async with CuaMcpDriver() as driver:
-            warnings = await driver.health_warnings()
-            limitations = driver.capability_limitations()
-            overview = await driver.desktop_overview()
-            payload = {
-                "status": "ok" if not warnings else "degraded",
-                "warnings": list(warnings),
-                "limitations": list(limitations),
-                "capabilities": driver.capability_summary(),
-                "visible_windows": len(overview.windows),
-                "known_apps": len(overview.apps),
-                "desktop_screenshot": bool(overview.screenshot_path),
-            }
-            print(json.dumps(payload, indent=2, ensure_ascii=False))
-            return 0 if not warnings else 2
+        payload = await PorterRuntime.preflight()
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if payload["status"] == "ok" else 2
 
     if not args.voice and not args.goal:
         raise SystemExit("provide a goal, use --voice, or use --check")
 
-    async with contextlib.AsyncExitStack() as stack:
-        try:
-            chooser = chooser_from_env(args.provider)
-        except ValueError as error:
-            raise SystemExit(str(error)) from None
-        stack.callback(chooser.close)
+    config = PorterRuntimeConfig(
+        provider=args.provider,
+        vision_enabled=not args.no_vision,
+        vision_model=args.vision_model,
+        writer_model=args.writer_model,
+        max_steps=args.max_steps,
+        max_candidates=args.max_candidates,
+        download_root=args.download_root,
+        enforce_policy=args.confirm_actions,
+    )
 
-        openrouter = None
-        if os.getenv("OPENROUTER_API_KEY", "").strip():
-            try:
-                openrouter = OpenRouterClient()
-            except ValueError as error:
-                raise SystemExit(str(error)) from None
-            stack.callback(openrouter.close)
-
-        perceiver = (
-            NoopPerceiver()
-            if args.no_vision or openrouter is None
-            else OpenRouterVisionPerceiver(
-                openrouter,
-                model=args.vision_model,
-            )
+    try:
+        runtime = PorterRuntime(
+            config,
+            event_sink=None if args.quiet else _runtime_event_printer,
         )
-        writer = (
-            None
-            if openrouter is None
-            else OpenRouterWriter(
-                openrouter,
-                model=args.writer_model,
-            )
-        )
-
-        driver = await stack.enter_async_context(CuaMcpDriver())
-        agent = AgentLoop(
-            driver,
-            chooser,
-            writer=writer,
-            perceiver=perceiver,
-            max_steps=args.max_steps,
-            max_candidates=args.max_candidates,
-            download_root=(
-                args.download_root
-                or (
-                    str(Path.home() / "Downloads")
-                    if (Path.home() / "Downloads").is_dir()
-                    else None
-                )
-            ),
-            progress=None if args.quiet else _progress_printer,
-            enforce_policy=args.confirm_actions,
-        )
-
-        run_error: Exception | None = None
-        result = None
-        try:
+        async with runtime:
             if args.voice:
-                if openrouter is None:
-                    raise RuntimeError(
-                        "voice mode requires OPENROUTER_API_KEY "
-                        "for transcription"
-                    )
-                voice = VoiceAssistant(
-                    agent,
-                    openrouter,
+                voice = runtime.create_voice_assistant(
                     stt_model=args.stt_model,
                     language=args.voice_language,
                     speak=args.speak,
@@ -268,40 +203,37 @@ async def main_async(args: argparse.Namespace) -> int:
                     await voice.run_forever()
                     return 0
             else:
-                result = await agent.run(
+                result = await runtime.submit(
                     args.goal,
                     app=args.app,
                     act=args.act,
-                    approve_consequential=(
-                        args.approve_consequential
-                    ),
+                    approve_consequential=args.approve_consequential,
                     allow_foreground=args.allow_foreground,
                     confirm=_terminal_confirm,
                 )
-        except Exception as error:
-            run_error = error
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    except Exception as error:
+        raise SystemExit(f"error: {error}") from None
 
-        if run_error is not None:
-            raise SystemExit(f"error: {run_error}") from None
-        assert result is not None
-        payload = _result_json(result)
-        if args.json:
-            print(
-                json.dumps(
-                    payload,
-                    indent=2,
-                    ensure_ascii=False,
-                )
+    payload = _result_json(result)
+    if args.json:
+        print(
+            json.dumps(
+                payload,
+                indent=2,
+                ensure_ascii=False,
             )
-        else:
-            print(f"{result.status}: {result.message}")
-            if result.steps:
-                last = result.steps[-1]
-                print(
-                    f"last decision: {last.selected_id} "
-                    f"({last.confidence:.0%}) — {last.description}"
-                )
-        return 0 if result.status in {"completed", "dry_run"} else 2
+        )
+    else:
+        print(f"{result.status}: {result.message}")
+        if result.steps:
+            last = result.steps[-1]
+            print(
+                f"last decision: {last.selected_id} "
+                f"({last.confidence:.0%}) — {last.description}"
+            )
+    return 0 if result.status in {"completed", "dry_run"} else 2
 
 
 def main() -> int:
