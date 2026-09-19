@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Protocol
 
 from contracts import DesktopOverview, Observation, Plan, PlanStep, StepRecord
@@ -106,6 +107,9 @@ Rules:
 - completion must describe a visible/readable postcondition.
 - Do not output coordinates, selectors, shell commands, tool names, or mouse/keyboard instructions.
 - Prefer using already-open applications shown in the desktop context.
+- Do NOT create subgoals whose only purpose is bringing/focusing/activating a window or app. The harness selects the target app and Driver handles foreground escalation only when needed.
+- Do NOT create a separate final verification/confirmation/"stop" subgoal. Put the observable success condition on the mutating subgoal that should produce it.
+- If later steps already target an app, do not add a separate "open/launch/start <app>" subgoal; the harness launches a missing target app automatically.
 """
         body = self.client.chat_json(
             system="You plan bounded desktop GUI work. Return valid JSON only.",
@@ -143,7 +147,87 @@ Rules:
             )
         if not steps:
             steps = [PlanStep(goal=goal, completion=goal)]
+        steps = self._normalize_steps(steps)
+        if not steps:
+            steps = [PlanStep(goal=goal, completion=goal)]
         return Plan(goal=goal, steps=tuple(steps))
+
+    @staticmethod
+    def _normalize_steps(steps: list[PlanStep]) -> list[PlanStep]:
+        if len(steps) <= 1:
+            return steps
+
+        def words(text: str) -> str:
+            return " ".join(re.findall(r"[a-z0-9]+", text.casefold()))
+
+        normalized: list[PlanStep] = []
+        for index, step in enumerate(steps):
+            goal_text = words(step.goal)
+
+            focus_only = (
+                any(
+                    phrase in goal_text
+                    for phrase in (
+                        "bring to foreground",
+                        "bring the window to the foreground",
+                        "bring window to foreground",
+                        "focus the window",
+                        "focus window",
+                        "activate the window",
+                        "activate window",
+                        "make the window active",
+                        "make window active",
+                    )
+                )
+                or (
+                    "foreground" in goal_text
+                    and any(word in goal_text for word in ("window", "app", "firefox", "chrome"))
+                )
+            )
+            if focus_only:
+                continue
+
+            verify_only = (
+                index == len(steps) - 1
+                and (
+                    goal_text.startswith("confirm ")
+                    or goal_text.startswith("verify ")
+                    or goal_text.startswith("check ")
+                    or " and stop" in goal_text
+                    or goal_text.startswith("stop when ")
+                )
+            )
+            if verify_only and normalized:
+                previous = normalized[-1]
+                normalized[-1] = PlanStep(
+                    goal=previous.goal,
+                    app=previous.app,
+                    text=previous.text,
+                    completion=step.completion or previous.completion,
+                )
+                continue
+
+            launch_only = (
+                index < len(steps) - 1
+                and step.app
+                and re.fullmatch(
+                    r"(?:open|launch|start)(?: the)? "
+                    + re.escape(step.app.casefold())
+                    + r"(?: window)?",
+                    goal_text,
+                )
+                is not None
+                and any(
+                    later.app
+                    and later.app.casefold() == step.app.casefold()
+                    for later in steps[index + 1 :]
+                )
+            )
+            if launch_only:
+                continue
+
+            normalized.append(step)
+        return normalized
 
     async def repair_step(
         self,
@@ -180,7 +264,7 @@ Recent attempts: {json.dumps([item.compact() for item in history[-6:]], ensure_a
 
 The current subgoal is stalled or uncertain. Return one replacement GUI subgoal as JSON:
 {{"goal":"...","app":null,"text":null,"completion":"observable condition"}}
-Do not output tool names, coordinates, selectors, or shell commands. Keep the replacement consistent with the original user goal.
+Do not output tool names, coordinates, selectors, or shell commands. Keep the replacement consistent with the original user goal. Do not create a focus/foreground-only replacement; Driver escalation owns foregrounding.
 """
         body = self.client.chat_json(
             system="Repair one bounded desktop GUI subgoal. Return valid JSON only.",
