@@ -5,6 +5,7 @@ import io
 import math
 import shutil
 import subprocess
+import threading
 import wave
 
 from contracts import Candidate
@@ -52,8 +53,14 @@ class Microphone:
         self.silence_seconds = silence_seconds
         self.min_speech_seconds = min_speech_seconds
         self.base_threshold = base_threshold
+        self._lock = threading.Lock()
 
-    def record(self) -> bytes | None:
+    def record(
+        self,
+        *,
+        stop_event: threading.Event | None = None,
+        pause_event: threading.Event | None = None,
+    ) -> bytes | None:
         try:
             import numpy as np
             import sounddevice as sd
@@ -71,7 +78,7 @@ class Microphone:
         silence_limit = max(1, int(self.silence_seconds / self.BLOCK_SECONDS))
         min_speech_blocks = max(1, int(self.min_speech_seconds / self.BLOCK_SECONDS))
 
-        with sd.InputStream(
+        with self._lock, sd.InputStream(
             samplerate=self.RATE,
             channels=self.CHANNELS,
             dtype="float32",
@@ -79,6 +86,11 @@ class Microphone:
             device=self.device,
         ) as stream:
             for index in range(max_blocks):
+                if (
+                    (stop_event is not None and stop_event.is_set())
+                    or (pause_event is not None and pause_event.is_set())
+                ):
+                    return None
                 data, overflowed = stream.read(blocksize)
                 if overflowed:
                     continue
@@ -133,10 +145,23 @@ class VoiceAssistant:
         self.speaker = LocalSpeaker(speak)
         self.microphone = Microphone(device=microphone_device)
         self.allow_foreground = allow_foreground
+        self._monitor_stop = threading.Event()
+        self._monitor_pause = threading.Event()
 
-    async def _listen_text(self) -> str | None:
-        self.speaker.say("Listening.")
-        wav = await asyncio.to_thread(self.microphone.record)
+    async def _listen_text(
+        self,
+        *,
+        announce: bool = True,
+        stop_event: threading.Event | None = None,
+        pause_event: threading.Event | None = None,
+    ) -> str | None:
+        if announce:
+            self.speaker.say("Listening.")
+        wav = await asyncio.to_thread(
+            self.microphone.record,
+            stop_event=stop_event,
+            pause_event=pause_event,
+        )
         if not wav:
             return None
         text = await asyncio.to_thread(
@@ -150,25 +175,78 @@ class VoiceAssistant:
         return text or None
 
     async def _confirm(self, candidate: Candidate) -> bool:
+        self._monitor_pause.set()
+        await asyncio.sleep(self.microphone.BLOCK_SECONDS * 2)
         self.speaker.say(f"Confirm: {candidate.description} Say yes or no.")
-        for _ in range(2):
-            answer = await self._listen_text()
+        try:
+            for _ in range(2):
+                answer = await self._listen_text()
+                if not answer:
+                    continue
+                normalized = answer.casefold().strip(" .!?\n")
+                if normalized in {"yes", "yeah", "yep", "confirm", "confirmed", "proceed", "do it"}:
+                    return True
+                if normalized in {"no", "nope", "cancel", "stop", "don't", "do not"}:
+                    return False
+            return False
+        finally:
+            self._monitor_pause.clear()
+
+    async def _monitor_cancellation(self, cancel_event: asyncio.Event) -> None:
+        cancel_words = {
+            "cancel",
+            "stop",
+            "stop now",
+            "cancel that",
+            "stop that",
+            "never mind",
+            "nevermind",
+        }
+        while not self._monitor_stop.is_set() and not cancel_event.is_set():
+            if self._monitor_pause.is_set():
+                await asyncio.sleep(0.1)
+                continue
+            try:
+                answer = await self._listen_text(
+                    announce=False,
+                    stop_event=self._monitor_stop,
+                    pause_event=self._monitor_pause,
+                )
+            except Exception:
+                return
             if not answer:
                 continue
             normalized = answer.casefold().strip(" .!?\n")
-            if normalized in {"yes", "yeah", "yep", "confirm", "confirmed", "proceed", "do it"}:
-                return True
-            if normalized in {"no", "nope", "cancel", "stop", "don't", "do not"}:
-                return False
-        return False
+            if normalized in cancel_words:
+                cancel_event.set()
+                self.speaker.say("Cancelling.")
+                return
 
     async def execute_command(self, command: str) -> RunResult:
-        return await self.agent.run(
-            command,
-            act=True,
-            confirm=self._confirm,
-            allow_foreground=self.allow_foreground,
+        cancel_event = asyncio.Event()
+        self._monitor_stop.clear()
+        self._monitor_pause.clear()
+        run_task = asyncio.create_task(
+            self.agent.run(
+                command,
+                act=True,
+                confirm=self._confirm,
+                allow_foreground=self.allow_foreground,
+                cancel_event=cancel_event,
+            )
         )
+        monitor_task = asyncio.create_task(
+            self._monitor_cancellation(cancel_event)
+        )
+        try:
+            return await run_task
+        finally:
+            self._monitor_stop.set()
+            self._monitor_pause.clear()
+            try:
+                await asyncio.wait_for(monitor_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                monitor_task.cancel()
 
     async def run_forever(self) -> None:
         self.speaker.say("Voice computer control is ready.")
