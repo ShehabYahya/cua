@@ -7,61 +7,105 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from contracts import Candidate, Decision, Element, Observation
+from contracts import Decision, Element, Observation, Plan, PlanStep, Verification
 from loop import AgentLoop
 
 
 class FakeDriver:
-    def __init__(self) -> None:
-        self.observations = 0
-        self.executed: list[Candidate] = []
+    capture_bound_click = False
+
+    def __init__(self):
+        self.counter = 0
+        self.executed = []
+
+    async def desktop_overview(self):
+        from contracts import DesktopOverview
+        return DesktopOverview((), ())
+
+    async def has_window(self, app):
+        return True
+
+    async def ensure_app(self, app):
+        return None
 
     async def observe(self, app=None):
-        self.observations += 1
+        self.counter += 1
+        label = "New Tab" if self.counter == 1 else "Search the web"
         return Observation(
-            snapshot_id=f"s{self.observations}",
-            pid=7,
-            window_id=9,
-            app="Demo",
-            window_title="Demo",
-            elements=(Element(1, f"s{self.observations}:1", "Button", "Next"),),
+            f"s{self.counter}",
+            7,
+            9,
+            "Firefox",
+            label,
+            (
+                Element(
+                    1,
+                    f"s{self.counter}:1",
+                    "push button",
+                    "New Tab",
+                    actions=("click",),
+                ),
+            ),
         )
 
     async def execute(self, candidate):
-        self.executed.append(candidate)
+        self.executed.append(candidate.id)
         return {"effect": "confirmed"}
 
+    def with_foreground(self, candidate):
+        return candidate
 
-class ScriptedChooser:
-    def __init__(self, choices):
-        self.choices = iter(choices)
 
-    async def choose(self, *, candidates, **kwargs):
-        selected = next(self.choices)
-        ids = {candidate.id for candidate in candidates}
-        if selected not in ids:
-            raise AssertionError(f"test selected missing candidate {selected}")
+class FakePlanner:
+    async def plan(self, goal, **kwargs):
+        return Plan(
+            goal,
+            (PlanStep(goal, app="Firefox", completion="new tab exists"),),
+        )
+
+    async def repair_step(self, **kwargs):
+        return kwargs["current"]
+
+
+class FakeChooser:
+    async def choose(self, *, candidates, history, **kwargs):
+        selected = "click-1" if not history else "done"
         return Decision(selected, 0.99, {selected: 0.99})
 
 
-class LoopTest(unittest.TestCase):
-    def test_reobserve_never_executes_and_next_action_uses_fresh_snapshot(self) -> None:
-        driver = FakeDriver()
-        chooser = ScriptedChooser(["reobserve", "click-1"])
-        result = asyncio.run(
-            AgentLoop(driver, chooser, max_steps=2).run("click next", act=True)
+class FakeVerifier:
+    async def verify(self, *, observation, history, **kwargs):
+        return Verification(
+            bool(history and history[-1].executed),
+            0.99,
+            "changed",
         )
-        self.assertEqual(result.status, "budget_exhausted")
-        self.assertEqual(driver.observations, 2)
-        self.assertEqual(len(driver.executed), 1)
-        self.assertEqual(driver.executed[0].snapshot_id, "s2")
-        self.assertEqual(result.steps[0].outcome, "reobserve")
-        self.assertEqual(result.steps[1].outcome, "executed")
 
-    def test_dry_run_does_not_execute(self) -> None:
+
+class LoopTest(unittest.TestCase):
+    def test_execute_reobserve_verify_completes(self):
         driver = FakeDriver()
-        chooser = ScriptedChooser(["click-1"])
-        result = asyncio.run(AgentLoop(driver, chooser, max_steps=3).run("click next"))
+        agent = AgentLoop(
+            driver,
+            FakeChooser(),
+            planner=FakePlanner(),
+            verifier=FakeVerifier(),
+            max_steps=4,
+        )
+        result = asyncio.run(agent.run("open new tab", act=True))
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(driver.executed, ["click-1"])
+        self.assertEqual(result.completed_subgoals, 1)
+
+    def test_dry_run_never_executes(self):
+        driver = FakeDriver()
+        agent = AgentLoop(
+            driver,
+            FakeChooser(),
+            planner=FakePlanner(),
+            verifier=FakeVerifier(),
+        )
+        result = asyncio.run(agent.run("open new tab", act=False))
         self.assertEqual(result.status, "dry_run")
         self.assertEqual(driver.executed, [])
 
