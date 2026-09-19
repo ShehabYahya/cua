@@ -185,27 +185,48 @@ class CuaMcpDriver:
             payload["session"] = self._label
         result = await self._session.call_tool(name, payload)
         data = result.structuredContent
-        if isinstance(data, dict) and (
-            data.get("status") == "refused" or data.get("refusal")
-        ):
+        if isinstance(data, dict):
             refusal = data.get("refusal")
-            reason = str(
-                refusal.get("reason")
-                if isinstance(refusal, Mapping)
-                else refusal or data
-            )
-            escalation = data.get("escalation")
-            recommended = None
-            if isinstance(escalation, Mapping):
-                recommended = (
-                    escalation.get("target")
-                    or escalation.get("recommended")
+            code = data.get("code")
+            refused = (
+                data.get("status") == "refused"
+                or refusal is not None
+                or (
+                    bool(result.isError)
+                    and isinstance(code, str)
+                    and code
                 )
-            raise DriverRefusal(
-                name,
-                reason,
-                recommended=str(recommended) if recommended else None,
             )
+            if refused:
+                detail = data.get("detail")
+                reason_value = (
+                    refusal.get("reason")
+                    if isinstance(refusal, Mapping)
+                    else None
+                )
+                if not reason_value and isinstance(detail, Mapping):
+                    reason_value = (
+                        detail.get("reason")
+                        or detail.get("message")
+                    )
+                if not reason_value:
+                    reason_value = code or refusal or data
+                escalation = data.get("escalation")
+                recommended = None
+                if isinstance(escalation, Mapping):
+                    recommended = (
+                        escalation.get("target")
+                        or escalation.get("recommended")
+                    )
+                raise DriverRefusal(
+                    name,
+                    str(reason_value),
+                    recommended=(
+                        str(recommended)
+                        if recommended
+                        else None
+                    ),
+                )
         if result.isError:
             raise RuntimeError(f"{name} failed: {result.content}")
         if not isinstance(data, dict):
