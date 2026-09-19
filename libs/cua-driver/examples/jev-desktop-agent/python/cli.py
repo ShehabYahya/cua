@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+from pathlib import Path
 
 from contracts import Candidate
 from driver import CuaMcpDriver
@@ -102,6 +103,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--no-planner", action="store_true")
     result.add_argument("--no-vision", action="store_true")
     result.add_argument("--no-verifier", action="store_true")
+    result.add_argument(
+        "--download-root",
+        default=os.getenv("JEV_DESKTOP_DOWNLOAD_ROOT"),
+        help=(
+            "approved absolute directory for typed browser downloads; "
+            "defaults to ~/Downloads when that directory exists"
+        ),
+    )
     result.add_argument(
         "--approve-consequential",
         action="store_true",
@@ -209,6 +218,14 @@ async def main_async(args: argparse.Namespace) -> int:
             max_steps=args.max_steps,
             max_candidates=args.max_candidates,
             min_confidence=args.min_confidence,
+            download_root=(
+                args.download_root
+                or (
+                    str(Path.home() / "Downloads")
+                    if (Path.home() / "Downloads").is_dir()
+                    else None
+                )
+            ),
         )
         try:
             if args.voice:
