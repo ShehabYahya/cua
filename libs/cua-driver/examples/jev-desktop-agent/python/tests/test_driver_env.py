@@ -19,15 +19,34 @@ class DriverEnvironmentTest(unittest.TestCase):
             env["CUA_DRIVER_RS_A11Y_ADVERTISE_MODE"],
             "is_enabled_only",
         )
+        self.assertNotIn("CUA_DRIVER_RS_ENABLE_WAYLAND", env)
 
-    def test_explicit_advertise_mode_is_preserved(self) -> None:
+    def test_wayland_session_enables_native_wayland_backend(self) -> None:
         with patch.object(sys, "platform", "linux"), patch.dict(
             os.environ,
-            {"CUA_DRIVER_RS_A11Y_ADVERTISE_MODE": "none"},
+            {"WAYLAND_DISPLAY": "wayland-0"},
+            clear=True,
+        ):
+            env = driver_child_environment()
+        self.assertEqual(env["CUA_DRIVER_RS_ENABLE_WAYLAND"], "1")
+        self.assertEqual(
+            env["CUA_DRIVER_RS_A11Y_ADVERTISE_MODE"],
+            "is_enabled_only",
+        )
+
+    def test_explicit_overrides_are_preserved(self) -> None:
+        with patch.object(sys, "platform", "linux"), patch.dict(
+            os.environ,
+            {
+                "WAYLAND_DISPLAY": "wayland-0",
+                "CUA_DRIVER_RS_A11Y_ADVERTISE_MODE": "none",
+                "CUA_DRIVER_RS_ENABLE_WAYLAND": "0",
+            },
             clear=True,
         ):
             env = driver_child_environment()
         self.assertEqual(env["CUA_DRIVER_RS_A11Y_ADVERTISE_MODE"], "none")
+        self.assertEqual(env["CUA_DRIVER_RS_ENABLE_WAYLAND"], "0")
 
 
 if __name__ == "__main__":
