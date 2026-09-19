@@ -1,9 +1,10 @@
 [project]
 name = "cua-driver-jev-desktop-agent-example"
 version = "0.2.0"
-description = "General desktop agent loop with Cua Driver, TypeSafe Jev, OpenRouter planning, hybrid perception, verification, and voice"
+description = "General desktop agent loop with Cua Driver, TypeSafe Jev categorical decisions, local operation bundles, lazy perception, and voice"
 requires-python = ">=3.10"
 dependencies = [
+  "httpx>=0.27,<1",
   "mcp>=1.26.0,<2",
   "typesafe-sdk>=0.6.0,<1",
 ]

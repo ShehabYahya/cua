@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 
 from contracts import Candidate
 from driver import CuaMcpDriver
-from jev_adapter import HierarchicalChooser, chooser_from_env
+from jev_adapter import chooser_from_env
 from loop import AgentLoop, RunResult
 from openrouter_client import (
     DEFAULT_REASONING_MODEL,
@@ -17,8 +18,6 @@ from openrouter_client import (
     OpenRouterClient,
 )
 from perception import NoopPerceiver, OpenRouterVisionPerceiver
-from planner import OpenRouterPlanner, PassThroughPlanner
-from verifier import ConservativeVerifier, OpenRouterVerifier
 from voice import VoiceAssistant
 from writer import OpenRouterWriter
 
@@ -39,7 +38,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument(
         "--app",
-        help="override the planner and target a matching app/window",
+        help="target a matching app/window",
     )
     result.add_argument(
         "--provider",
@@ -67,6 +66,15 @@ def parser() -> argparse.ArgumentParser:
         help="ISO-639-1 STT language hint, e.g. en or ar",
     )
     result.add_argument(
+        "--voice-silence",
+        type=float,
+        default=0.5,
+        help=(
+            "seconds of trailing silence that ends a spoken command "
+            "(default 0.5)"
+        ),
+    )
+    result.add_argument(
         "--stt-model",
         default=os.getenv(
             "JEV_DESKTOP_STT_MODEL",
@@ -79,23 +87,9 @@ def parser() -> argparse.ArgumentParser:
         help="sounddevice microphone index",
     )
     result.add_argument(
-        "--planner-model",
-        default=os.getenv(
-            "JEV_DESKTOP_PLANNER_MODEL",
-            DEFAULT_REASONING_MODEL,
-        ),
-    )
-    result.add_argument(
         "--vision-model",
         default=os.getenv(
             "JEV_DESKTOP_VISION_MODEL",
-            DEFAULT_REASONING_MODEL,
-        ),
-    )
-    result.add_argument(
-        "--verifier-model",
-        default=os.getenv(
-            "JEV_DESKTOP_VERIFIER_MODEL",
             DEFAULT_REASONING_MODEL,
         ),
     )
@@ -106,29 +100,7 @@ def parser() -> argparse.ArgumentParser:
             DEFAULT_REASONING_MODEL,
         ),
     )
-    result.add_argument(
-        "--planner",
-        action="store_true",
-        help=(
-            "opt in to OpenRouter task decomposition; default is one direct "
-            "goal with no planner model call"
-        ),
-    )
-    result.add_argument(
-        "--no-planner",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
     result.add_argument("--no-vision", action="store_true")
-    result.add_argument("--no-verifier", action="store_true")
-    result.add_argument(
-        "--verify-every-action",
-        action="store_true",
-        help=(
-            "run the full verifier after every mutation; slower than the "
-            "default direct loop, which verifies remotely only when Jev says done"
-        ),
-    )
     result.add_argument(
         "--download-root",
         default=os.getenv("JEV_DESKTOP_DOWNLOAD_ROOT"),
@@ -138,9 +110,20 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument(
+        "--confirm-actions",
+        action="store_true",
+        help=(
+            "opt in to the harness policy/confirmation gate: filter "
+            "sensitive fields and ask before consequential actions"
+        ),
+    )
+    result.add_argument(
         "--approve-consequential",
         action="store_true",
-        help="pre-authorize actions normally requiring confirmation",
+        help=(
+            "with --confirm-actions, pre-authorize actions that would "
+            "otherwise require confirmation"
+        ),
     )
     result.add_argument(
         "--allow-foreground",
@@ -151,8 +134,7 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument("--max-steps", type=int, default=30)
-    result.add_argument("--max-candidates", type=int, default=96)
-    result.add_argument("--min-confidence", type=float, default=0.55)
+    result.add_argument("--max-candidates", type=int, default=32)
     result.add_argument(
         "--quiet",
         action="store_true",
@@ -208,72 +190,47 @@ async def main_async(args: argparse.Namespace) -> int:
 
     if not args.voice and not args.goal:
         raise SystemExit("provide a goal, use --voice, or use --check")
-    try:
-        chooser = HierarchicalChooser(
-            chooser_from_env(args.provider),
-            max_leaf_candidates=32,
-            group_size=20,
-        )
-    except ValueError as error:
-        raise SystemExit(str(error)) from None
 
-    openrouter = None
-    if os.getenv("OPENROUTER_API_KEY", "").strip():
-        openrouter = OpenRouterClient()
-    planner = (
-        OpenRouterPlanner(
-            openrouter,
-            model=args.planner_model,
-        )
-        if (
-            args.planner
-            and not args.no_planner
-            and openrouter is not None
-        )
-        else PassThroughPlanner()
-    )
-    perceiver = (
-        NoopPerceiver()
-        if args.no_vision or openrouter is None
-        else OpenRouterVisionPerceiver(
-            openrouter,
-            model=args.vision_model,
-        )
-    )
-    verifier = (
-        ConservativeVerifier()
-        if args.no_verifier or openrouter is None
-        else OpenRouterVerifier(
-            openrouter,
-            model=args.verifier_model,
-        )
-    )
-    writer = (
-        None
-        if openrouter is None
-        else OpenRouterWriter(
-            openrouter,
-            model=args.writer_model,
-        )
-    )
+    async with contextlib.AsyncExitStack() as stack:
+        try:
+            chooser = chooser_from_env(args.provider)
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
+        stack.callback(chooser.close)
 
-    run_error: Exception | None = None
-    result = None
-    async with CuaMcpDriver() as driver:
-        warnings = await driver.health_warnings()
-        for warning in warnings:
-            print(f"[preflight] {warning}")
+        openrouter = None
+        if os.getenv("OPENROUTER_API_KEY", "").strip():
+            try:
+                openrouter = OpenRouterClient()
+            except ValueError as error:
+                raise SystemExit(str(error)) from None
+            stack.callback(openrouter.close)
 
+        perceiver = (
+            NoopPerceiver()
+            if args.no_vision or openrouter is None
+            else OpenRouterVisionPerceiver(
+                openrouter,
+                model=args.vision_model,
+            )
+        )
+        writer = (
+            None
+            if openrouter is None
+            else OpenRouterWriter(
+                openrouter,
+                model=args.writer_model,
+            )
+        )
+
+        driver = await stack.enter_async_context(CuaMcpDriver())
         agent = AgentLoop(
             driver,
             chooser,
-            planner=planner,
-            verifier=verifier,
-            perceiver=perceiver,
             writer=writer,
+            perceiver=perceiver,
             max_steps=args.max_steps,
             max_candidates=args.max_candidates,
-            min_confidence=args.min_confidence,
             download_root=(
                 args.download_root
                 or (
@@ -283,8 +240,11 @@ async def main_async(args: argparse.Namespace) -> int:
                 )
             ),
             progress=None if args.quiet else _progress_printer,
-            verify_every_action=args.verify_every_action,
+            enforce_policy=args.confirm_actions,
         )
+
+        run_error: Exception | None = None
+        result = None
         try:
             if args.voice:
                 if openrouter is None:
@@ -300,6 +260,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     speak=args.speak,
                     microphone_device=args.mic,
                     allow_foreground=args.allow_foreground,
+                    silence_seconds=args.voice_silence,
                 )
                 if args.goal:
                     result = await voice.execute_command(args.goal)
@@ -315,49 +276,45 @@ async def main_async(args: argparse.Namespace) -> int:
                         args.approve_consequential
                     ),
                     allow_foreground=args.allow_foreground,
-                    confirm=(
-                        _terminal_confirm
-                        if args.act
-                        else None
-                    ),
+                    confirm=_terminal_confirm,
                 )
         except Exception as error:
             run_error = error
 
-    if run_error is not None:
-        raise SystemExit(f"error: {run_error}") from None
-    assert result is not None
-    payload = _result_json(result)
-    if args.json:
-        print(
-            json.dumps(
-                payload,
-                indent=2,
-                ensure_ascii=False,
-            )
-        )
-    else:
-        print(f"{result.status}: {result.message}")
-        if result.steps:
-            last = result.steps[-1]
+        if run_error is not None:
+            raise SystemExit(f"error: {run_error}") from None
+        assert result is not None
+        payload = _result_json(result)
+        if args.json:
             print(
-                f"last decision: {last.selected_id} "
-                f"({last.confidence:.0%}) — {last.description}"
+                json.dumps(
+                    payload,
+                    indent=2,
+                    ensure_ascii=False,
+                )
             )
-    return 0 if result.status in {"completed", "dry_run"} else 2
+        else:
+            print(f"{result.status}: {result.message}")
+            if result.steps:
+                last = result.steps[-1]
+                print(
+                    f"last decision: {last.selected_id} "
+                    f"({last.confidence:.0%}) — {last.description}"
+                )
+        return 0 if result.status in {"completed", "dry_run"} else 2
 
 
 def main() -> int:
     args = parser().parse_args()
     if args.max_steps < 1:
         raise SystemExit("--max-steps must be at least 1")
-    if not 4 <= args.max_candidates <= 192:
+    if not 4 <= args.max_candidates <= 32:
         raise SystemExit(
-            "--max-candidates must be between 4 and 192"
+            "--max-candidates must be between 4 and 32"
         )
-    if not 0.0 <= args.min_confidence <= 1.0:
+    if not 0.1 <= args.voice_silence <= 10.0:
         raise SystemExit(
-            "--min-confidence must be between 0 and 1"
+            "--voice-silence must be between 0.1 and 10.0 seconds"
         )
     return asyncio.run(main_async(args))
 

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Callable
+from typing import Callable, Mapping
 
-from candidates import build_candidates
-from confidence import assess_decision
+from candidates import build_candidates, shortlist_candidates
 from contracts import (
     ABSTAIN,
     DONE,
@@ -14,29 +13,55 @@ from contracts import (
     ConfirmationCallback,
     DesktopDriver,
     DriverRefusal,
+    Observation,
     Plan,
     PlanStep,
     StepRecord,
-    Verification,
-    validate_decision,
 )
 from perception import NoopPerceiver
 from planner import PassThroughPlanner
 from policy import classify_risk, sensitive_text_intent
 from resources import DownloadTracker
-from verifier import (
-    ConservativeVerifier,
-    GoalVerifier,
-    OpenRouterVerifier,
-    local_verification,
-    state_changed,
-)
 from writer import (
-    OpenRouterWriter,
     PreparedText,
+    inferred_text_slots,
     quoted_text_slots,
-    redact_prepared_text,
 )
+
+"""One Jev decision per iteration, executed against Cua Driver.
+
+Every iteration refreshes the window inventory once, observes exactly one target
+window, builds the complete local action pool, shortens it to a bounded Jev
+choice set, asks Jev once, executes what it selected, and then reads the
+resulting state — which *is* the next iteration's observation. There is no
+planner, no independent verifier, no confidence gate, and no post-action
+observation followed by an immediate pre-action observation.
+"""
+
+SESSION_SOURCE = "session"
+MORE_ACTIONS = "more-actions"
+DISCOVER_APPS = "discover-apps"
+PREPARE_TEXT = "prepare-text"
+INSPECT_SCREEN = "inspect-screen"
+
+# Sentinel status returned by _observe when the Driver lifecycle session ended.
+_REVIVED = "__revived__"
+
+
+def _pair(window: Mapping[str, object] | None) -> tuple[int, int] | None:
+    if not isinstance(window, Mapping):
+        return None
+    pid = window.get("pid")
+    window_id = window.get("window_id")
+    if not isinstance(pid, int) or not isinstance(window_id, int):
+        return None
+    return pid, window_id
+
+
+def _label(window: Mapping[str, object]) -> str:
+    app = str(window.get("app_name") or window.get("name") or "window")
+    title = str(window.get("title") or "").strip()
+    return f"{app} — {title}" if title else app
 
 
 @dataclass(frozen=True)
@@ -48,41 +73,50 @@ class RunResult:
     completed_subgoals: int = 0
 
 
+@dataclass(frozen=True)
+class _Gate:
+    status: str
+    message: str
+    outcome: str = "policy_denied"
+
+
+@dataclass(frozen=True)
+class _BringResult:
+    activated: bool
+    outcome: str
+    reason: str | None = None
+
+
 class AgentLoop:
     def __init__(
         self,
         driver: DesktopDriver,
         chooser: Chooser,
         *,
-        planner=None,
-        verifier: GoalVerifier | None = None,
+        writer=None,
         perceiver=None,
-        writer: OpenRouterWriter | None = None,
         max_steps: int = 30,
-        max_candidates: int = 96,
-        min_confidence: float = 0.55,
-        max_repairs_per_subgoal: int = 2,
+        max_candidates: int = 32,
         download_root: str | None = None,
         progress: Callable[[str], None] | None = None,
-        verify_every_action: bool = False,
+        enforce_policy: bool = False,
     ) -> None:
         self._driver = driver
         self._chooser = chooser
-        self._planner = planner or PassThroughPlanner()
-        self._verifier = verifier or ConservativeVerifier()
-        self._perceiver = perceiver or NoopPerceiver()
         self._writer = writer
-        self._max_steps = max_steps
-        self._max_candidates = max_candidates
-        self._min_confidence = min_confidence
-        self._max_repairs = max_repairs_per_subgoal
+        self._perceiver = perceiver if perceiver is not None else NoopPerceiver()
+        self._max_steps = max(1, int(max_steps))
+        self._max_candidates = max(4, int(max_candidates))
         self._download_root = download_root
         self._download_tracker = DownloadTracker(download_root)
+        self._progress_callback = progress
+        self._enforce_policy = enforce_policy
         self._recent_files: tuple[str, ...] = ()
         self._recent_context: list[str] = []
-        self._progress_callback = progress
-        self._verify_every_action = verify_every_action
+        self._last_target: tuple[int, int] | None = None
+        self._planner = PassThroughPlanner()
 
+    # -- diagnostics -------------------------------------------------------
     def _progress(self, message: str) -> None:
         if self._progress_callback is None:
             return
@@ -95,59 +129,594 @@ class AgentLoop:
     def recent_context(self) -> tuple[str, ...]:
         return tuple(self._recent_context[-8:])
 
-    def _remember(self, goal: str, result: RunResult) -> None:
-        actions = [
-            item.description
-            for item in result.steps
-            if item.executed
-        ][-4:]
-        summary = (
-            f"Previous command {goal!r} ended as {result.status}. "
-            f"Completed {result.completed_subgoals}/{len(result.plan.steps)} subgoals. "
-            f"Recent actions: {actions}. Result: {result.message}"
-        )
-        self._recent_context.append(summary)
+    @property
+    def last_target(self) -> tuple[int, int] | None:
+        return self._last_target
+
+    def _append_context(self, line: str) -> None:
+        self._recent_context.append(line)
         self._recent_context[:] = self._recent_context[-8:]
 
-    async def _prepared_texts(
+    def _remember(self, goal: str, result: RunResult) -> None:
+        actions = [item.description for item in result.steps if item.executed][-4:]
+        self._append_context(
+            f"Previous command {goal!r} ended as {result.status}. "
+            f"Recent actions: {actions}. Result: {result.message}"
+        )
+
+    def _has_composer(self) -> bool:
+        return callable(getattr(self._writer, "compose", None))
+
+    def _has_vision(self) -> bool:
+        # NoopPerceiver means no grounding capability is configured at all.
+        return self._perceiver is not None and not isinstance(
+            self._perceiver, NoopPerceiver
+        )
+
+    # -- inventory / observation -------------------------------------------
+    async def _list_inventory(self) -> tuple[Mapping[str, object], ...] | str:
+        """Read the window inventory.
+
+        A real read error propagates truthfully instead of being reported as an
+        empty desktop; only `session_ended` is signalled back to the caller so
+        the shared revival budget can handle it.
+        """
+        try:
+            return tuple(await self._driver.list_windows())
+        except DriverRefusal as refusal:
+            if refusal.code == "session_ended":
+                return _REVIVED
+            raise
+
+    @staticmethod
+    def _matching_windows(
+        inventory: tuple[Mapping[str, object], ...],
+        app: str,
+    ) -> list[Mapping[str, object]]:
+        needle = app.casefold().strip()
+        return [
+            window
+            for window in inventory
+            if needle
+            in f"{window.get('app_name', '')} {window.get('title', '')}".casefold()
+        ]
+
+    def _pick_target(
+        self,
+        inventory: tuple[Mapping[str, object], ...],
+        app: str | None,
+    ) -> tuple[int, int] | None:
+        """Resolve a target. A named app with no window resolves to nothing."""
+        if not inventory:
+            return None
+        if app:
+            matched = self._matching_windows(inventory, app)
+            if not matched:
+                # Never silently fall back to another application when the
+                # caller explicitly named one.
+                return None
+            return self._best_window(matched)
+        return self._best_window(list(inventory))
+
+    def _select_target(
+        self,
+        inventory: tuple[Mapping[str, object], ...],
+        *,
+        target: tuple[int, int] | None,
+        wanted_app: str | None,
+        pending: bool,
+        launch_name: str | None = None,
+    ) -> tuple[int, int] | None:
+        """Resolve the target for a fresh inventory.
+
+        `pending=True` means a run is already under way: keep the current target
+        if it is still present, otherwise expose desktop selection. Only
+        `pending=False` (initial selection) may prefer a default window.
+        """
+        if launch_name:
+            matched = self._matching_windows(inventory, launch_name)
+            return self._best_window(matched) if matched else None
+        if pending:
+            if target is not None and target in {_pair(w) for w in inventory}:
+                return target
+            return None
+        if wanted_app:
+            return self._pick_target(inventory, wanted_app)
+        if self._last_target is not None and self._last_target in {
+            _pair(window) for window in inventory
+        }:
+            return self._last_target
+        return self._pick_target(inventory, None)
+
+    @staticmethod
+    def _best_window(
+        windows: list[Mapping[str, object]],
+    ) -> tuple[int, int] | None:
+        visible = [w for w in windows if w.get("is_on_screen", True)] or windows
+        focused = [w for w in visible if w.get("is_focused") is True]
+        if focused:
+            return _pair(focused[0])
+        with_z = [w for w in visible if isinstance(w.get("z_index"), int)]
+        if with_z:
+            return _pair(max(with_z, key=lambda w: int(w["z_index"])))
+
+        def area(window: Mapping[str, object]) -> float:
+            bounds = window.get("bounds")
+            if not isinstance(bounds, Mapping):
+                return 0.0
+            return float(bounds.get("width", 0) or 0) * float(
+                bounds.get("height", 0) or 0
+            )
+
+        return _pair(max(visible, key=area))
+
+    def _desktop_only(
+        self,
+        inventory: tuple[Mapping[str, object], ...],
+    ) -> Observation:
+        return Observation(
+            snapshot_id="desktop",
+            pid=0,
+            window_id=0,
+            app="desktop",
+            window_title="",
+            elements=(),
+            desktop_windows=inventory,
+        )
+
+    async def _observe(
+        self,
+        inventory: tuple[Mapping[str, object], ...],
+        target: tuple[int, int] | None,
+        *,
+        app: str | None = None,
+        include_screenshot: bool = False,
+        enrich_goal: str | None = None,
+    ) -> Observation | str:
+        if target is None:
+            # Exact inventory says the target is absent: desktop selection is
+            # the correct state, not a redirected window.
+            return self._desktop_only(inventory)
+        try:
+            observation = await self._driver.observe(
+                app,
+                include_screenshot=include_screenshot,
+                windows=inventory,
+                target_window=target,
+            )
+        except DriverRefusal as refusal:
+            if refusal.code == "session_ended":
+                # Let the caller revive once and re-observe.
+                return _REVIVED
+            # Any other refusal is a real failure and must not be reported as a
+            # successful read of a desktop-only state.
+            raise
+        if include_screenshot and enrich_goal is not None:
+            observation = await self._enrich(enrich_goal, observation)
+        return observation
+
+    async def _enrich(self, goal: str, observation: Observation) -> Observation:
+        try:
+            return await self._perceiver.enrich(goal, observation)
+        except Exception as error:
+            self._progress(f"Visual grounding failed: {error}")
+            return observation
+
+    async def _read_state(
         self,
         *,
-        original_goal: str,
-        step: PlanStep,
-        observation,
-    ) -> tuple[PreparedText, ...]:
-        slots = list(quoted_text_slots(original_goal))
-        if step.text and all(item.text != step.text for item in slots):
-            slots.append(
-                PreparedText(
-                    f"text-{len(slots) + 1}",
-                    step.text,
-                    "planner",
+        target: tuple[int, int] | None,
+        wanted_app: str | None,
+        pending: bool,
+        launch_name: str | None = None,
+    ) -> tuple[Observation, tuple[Mapping[str, object], ...], tuple[int, int] | None] | str:
+        """One shared read path: inventory, target selection, observation.
+
+        Returns (observation, inventory, target), or `_REVIVED` when the Driver
+        lifecycle session ended. Real read errors propagate; a target absent from
+        the exact inventory becomes desktop selection rather than a substituted
+        window.
+        """
+        inventory = await self._list_inventory()
+        if inventory == _REVIVED:
+            return _REVIVED
+        if launch_name:
+            matched = self._matching_windows(inventory, launch_name)
+            if not matched:
+                # The launched window is not here; remain in desktop selection
+                # and never launch the same app again automatically.
+                return self._desktop_only(inventory), inventory, None
+        target = self._select_target(
+            inventory,
+            target=target,
+            wanted_app=wanted_app,
+            pending=pending,
+            launch_name=launch_name,
+        )
+        observation = await self._observe(inventory, target, app=wanted_app)
+        if observation == _REVIVED:
+            return _REVIVED
+        if observation.desktop_windows:
+            inventory = tuple(observation.desktop_windows)
+        if observation.pid:
+            target = (observation.pid, observation.window_id)
+            self._last_target = target
+        return observation, inventory, target
+
+    # -- candidate pool ----------------------------------------------------
+    def _pool_limit(self, observation: Observation, slots: tuple[PreparedText, ...]) -> int:
+        # Slot count is part of the budget: every supplied local slot must stay
+        # reachable even after several were composed on demand. The slot term
+        # upper-bounds two grounded type candidates per element per slot
+        # (semantic + browser), one focused route per slot, and three bundles
+        # per slot (fill-submit, browser-search, new-tab-search), as agreed with
+        # the candidates.py owner.
+        return max(
+            96,
+            24 * len(observation.elements)
+            + 2 * len(observation.visual_regions)
+            + 2 * len(slots) * (len(observation.elements) + 2)
+            + 128,
+        )
+
+    def _build_pool(
+        self,
+        goal: str,
+        observation: Observation,
+        slots: tuple[PreparedText, ...],
+    ) -> list[Candidate]:
+        if not observation.pid:
+            # Desktop/session-selection state: no window-targeted shortcuts,
+            # bundles, clicks or typing can be valid. Terminals are still
+            # required so an empty desktop can still be reported complete,
+            # refreshed, or abandoned instead of producing an empty Choice.
+            return [
+                Candidate(
+                    DONE,
+                    "The current subgoal is already complete; stop acting on it.",
+                    None,
+                    {},
+                    source="terminal",
+                ),
+                Candidate(
+                    REOBSERVE,
+                    "Discard this decision set and obtain a fresh observation.",
+                    None,
+                    {},
+                    source="terminal",
+                ),
+                Candidate(
+                    ABSTAIN,
+                    "Stop without acting because none of the proposed actions is "
+                    "safe or useful.",
+                    None,
+                    {},
+                    source="terminal",
+                ),
+            ]
+        return build_candidates(
+            goal,
+            observation,
+            prepared_texts=slots,
+            max_candidates=self._pool_limit(observation, slots),
+            allow_visual_clicks=bool(
+                getattr(self._driver, "coordinate_click_supported", False)
+                or self._driver.capture_bound_click
+            ),
+            download_root=self._download_root,
+            recent_files=self._download_tracker.validate_recent(self._recent_files),
+            enforce_policy=self._enforce_policy,
+        )
+
+    @staticmethod
+    def _more_actions() -> Candidate:
+        return Candidate(
+            id=MORE_ACTIONS,
+            description=(
+                "Show more of the remaining controls in this window; none of the "
+                "offered choices is the right next step."
+            ),
+            tool=None,
+            arguments={},
+            source=SESSION_SOURCE,
+        )
+
+    def _session_candidates(
+        self,
+        *,
+        inventory: tuple[Mapping[str, object], ...],
+        target: tuple[int, int] | None,
+        apps: tuple[Mapping[str, object], ...],
+        suppressed: set[str],
+    ) -> list[Candidate]:
+        out: list[Candidate] = []
+        for window in inventory:
+            pair = _pair(window)
+            if pair is None or pair == target:
+                continue
+            candidate = Candidate(
+                id=f"switch-window-{pair[0]}-{pair[1]}",
+                description=f"Switch to the window {_label(window)!r}.",
+                tool=None,
+                arguments={"pid": pair[0], "window_id": pair[1]},
+                source=SESSION_SOURCE,
+            )
+            if candidate.id not in suppressed:
+                out.append(candidate)
+        if apps:
+            for index, app in enumerate(apps, start=1):
+                name = app.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                candidate = Candidate(
+                    id=f"launch-app-{index}",
+                    description=f"Launch the application {name.strip()!r}.",
+                    tool=None,
+                    arguments={"name": name.strip()},
+                    source=SESSION_SOURCE,
+                )
+                if candidate.id not in suppressed:
+                    out.append(candidate)
+        elif DISCOVER_APPS not in suppressed:
+            out.append(
+                Candidate(
+                    id=DISCOVER_APPS,
+                    description=(
+                        "Ask the Driver which applications are installed, so one "
+                        "can be launched."
+                    ),
+                    tool=None,
+                    arguments={},
+                    source=SESSION_SOURCE,
                 )
             )
-        if slots or self._writer is None:
-            return tuple(slots)
-        return await self._writer.prepare(
-            original_goal=original_goal,
-            step=step,
-            observation=observation,
-        )
+        if (
+            target is not None
+            and self._has_vision()
+            and INSPECT_SCREEN not in suppressed
+        ):
+            out.append(
+                Candidate(
+                    id=INSPECT_SCREEN,
+                    description=(
+                        "Capture this window's screenshot and ground its controls "
+                        "visually, then choose again."
+                    ),
+                    tool=None,
+                    arguments={},
+                    source=SESSION_SOURCE,
+                )
+            )
+        # Text can be composed even when nothing local was extracted yet.
+        if self._has_composer() and PREPARE_TEXT not in suppressed:
+            out.append(
+                Candidate(
+                    id=PREPARE_TEXT,
+                    description=(
+                        "Ask the companion model for the ordinary text this goal "
+                        "needs, then choose again."
+                    ),
+                    tool=None,
+                    arguments={},
+                    source=SESSION_SOURCE,
+                )
+            )
+        return out
 
-    async def _verification(
+    # -- execution ---------------------------------------------------------
+    async def _execute(
         self,
+        candidate: Candidate,
         *,
-        original_goal: str,
-        step: PlanStep,
-        observation,
-        history: list[StepRecord],
-    ):
-        return await self._verifier.verify(
-            original_goal=original_goal,
-            step=step,
-            observation=observation,
-            history=history,
-        )
+        act: bool,
+        allow_foreground: bool,
+        cancel_event,
+        result_ref: dict,
+    ) -> tuple[str, str, int]:
+        """Returns (outcome, reason, delivered_prefix_count)."""
+        primitives = tuple(candidate.steps) or (candidate,)
+        for primitive in primitives:
+            if primitive.tool is None:
+                raise ValueError("candidate has no executable tool")
+        if not act:
+            return "dry_run", candidate.description, 0
 
+        delivered = 0
+        for index, primitive in enumerate(primitives):
+            if cancel_event is not None and cancel_event.is_set():
+                return (
+                    "cancelled_after_action" if delivered else "cancelled",
+                    f"cancelled before primitive {index + 1}/{len(primitives)}",
+                    delivered,
+                )
+            try:
+                result_ref["result"] = await self._driver.execute(primitive)
+                delivered += 1
+                continue
+            except DriverRefusal as refusal:
+                if refusal.code == "session_ended" and delivered == 0:
+                    return "session_revived", refusal.reason, 0
+                if refusal.recommended == "foreground" and allow_foreground:
+                    if cancel_event is not None and cancel_event.is_set():
+                        return "cancelled_after_action", "cancelled before foreground retry", delivered
+                    try:
+                        result_ref["result"] = await self._driver.execute(
+                            self._driver.with_foreground(primitive)
+                        )
+                        delivered += 1
+                        continue
+                    except DriverRefusal as foreground_refusal:
+                        if (
+                            foreground_refusal.code == "session_ended"
+                            and delivered == 0
+                        ):
+                            return "session_revived", foreground_refusal.reason, 0
+                        outcome, reason = self._refusal_outcome(foreground_refusal)
+                        if delivered:
+                            outcome = "partial"
+                            reason = (
+                                f"{delivered}/{len(primitives)} primitive(s) were "
+                                f"delivered; stopped at primitive {index + 1} "
+                                f"(foreground retry): {foreground_refusal}"
+                            )
+                        return outcome, reason, delivered
+                    except Exception as error:
+                        return (
+                            self._prefix_outcome(delivered, index, len(primitives), error),
+                            self._prefix_reason(delivered, index, len(primitives), error),
+                            delivered,
+                        )
+                return self._exit_for(refusal, delivered, index, len(primitives))
+            except Exception as error:
+                # A generic failed call is not proof of delivery; only primitives
+                # that returned successfully are counted as delivered.
+                return (
+                    self._prefix_outcome(delivered, index, len(primitives), error),
+                    self._prefix_reason(delivered, index, len(primitives), error),
+                    delivered,
+                )
+        return "executed", "", delivered
+
+    @staticmethod
+    def _prefix_outcome(
+        delivered: int, index: int, total: int, error: object
+    ) -> str:
+        return "partial" if delivered else "failed"
+
+    @staticmethod
+    def _prefix_reason(
+        delivered: int, index: int, total: int, error: object
+    ) -> str:
+        if delivered:
+            return (
+                f"{delivered}/{total} primitive(s) were delivered; stopped at "
+                f"primitive {index + 1}: {error} (delivery of the failing "
+                "primitive is unknown)"
+            )
+        return f"primitive {index + 1}/{total} failed before delivery: {error}"
+
+    def _exit_for(
+        self,
+        refusal: DriverRefusal,
+        delivered: int,
+        index: int,
+        total: int,
+    ) -> tuple[str, str, int]:
+        outcome, reason = self._refusal_outcome(refusal)
+        if delivered:
+            return (
+                "partial",
+                f"{delivered}/{total} primitive(s) were delivered; stopped at "
+                f"primitive {index + 1}: {refusal}",
+                delivered,
+            )
+        return outcome, reason, delivered
+
+    @staticmethod
+    def _refusal_outcome(refusal: DriverRefusal) -> tuple[str, str]:
+        if refusal.recommended == "foreground":
+            return "needs_foreground", str(refusal)
+        return "refused", str(refusal)
+
+    @staticmethod
+    def _effect(result: object) -> str | None:
+        if not isinstance(result, Mapping):
+            return None
+        effect = result.get("effect")
+        return str(effect) if effect is not None else None
+
+    @staticmethod
+    def _is_download(candidate: Candidate) -> bool:
+        if candidate.tool == "browser_download":
+            return True
+        return any(step.tool == "browser_download" for step in candidate.steps)
+
+    # -- session operations -------------------------------------------------
+    async def _discover_apps(self) -> tuple[Mapping[str, object], ...]:
+        try:
+            return tuple(await self._driver.list_apps())
+        except Exception as error:
+            self._progress(f"App discovery failed: {error}")
+            return ()
+
+    async def _prepare_text(
+        self,
+        goal: str,
+        observation: Observation,
+        history: list[StepRecord],
+        slots: tuple[PreparedText, ...],
+    ) -> tuple[tuple[PreparedText, ...], bool]:
+        """Returns (slots, produced_something_new)."""
+        compose = getattr(self._writer, "compose", None)
+        if not callable(compose):
+            self._progress("No text composer is configured; keeping current slots.")
+            return slots, False
+        try:
+            added = await compose(
+                original_goal=goal,
+                observation=observation,
+                history=history,
+                existing=slots,
+            )
+        except Exception as error:
+            self._progress(f"Text preparation failed: {error}")
+            return slots, False
+        known = {slot.text for slot in slots}
+        merged = list(slots)
+        for slot in tuple(added or ()):
+            if slot.text and slot.text not in known:
+                known.add(slot.text)
+                merged.append(slot)
+        return tuple(merged), len(merged) > len(slots)
+
+    async def _bring_forward(self, candidate: Candidate) -> _BringResult:
+        pid = int(candidate.arguments["pid"])
+        window_id = int(candidate.arguments["window_id"])
+        has_tool = getattr(self._driver, "has_tool", None)
+        if not callable(has_tool) or not has_tool("bring_to_front"):
+            self._progress(
+                "The Driver does not advertise bring_to_front; the target is "
+                "selected but not physically activated."
+            )
+            return _BringResult(False, "target_selected")
+        activation = Candidate(
+            id="session-bring-to-front",
+            description="Bring the selected window to the front.",
+            tool="bring_to_front",
+            arguments={"pid": pid, "window_id": window_id},
+        )
+        try:
+            await self._driver.execute(activation)
+        except DriverRefusal as refusal:
+            self._progress(f"bring_to_front refused: {refusal}")
+            return _BringResult(False, "activation_refused", str(refusal))
+        except Exception as error:
+            self._progress(f"bring_to_front failed: {error}")
+            return _BringResult(False, "activation_failed", str(error))
+        return _BringResult(True, "activated")
+
+    async def _policy_gate(
+        self,
+        candidate: Candidate,
+        goal: str,
+        approve_consequential: bool,
+        confirm: ConfirmationCallback | None,
+    ) -> tuple[_Gate | None, bool]:
+        if candidate.risk == "safe":
+            risk = classify_risk(candidate.description, tool=candidate.tool)
+            if risk != candidate.risk:
+                candidate = replace(candidate, risk=risk)
+        if candidate.risk == "deny" or (
+            candidate.tool in {"type_text", "browser_type"}
+            and sensitive_text_intent(goal)
+        ):
+            return _Gate("blocked", f"Policy denied: {candidate.description}"), False
+        if candidate.risk == "confirm" and not approve_consequential:
+            approved = await confirm(candidate) if confirm is not None else False
+            return None, approved
+        return None, True
+
+    # -- main loop ---------------------------------------------------------
     async def run(
         self,
         goal: str,
@@ -159,880 +728,619 @@ class AgentLoop:
         confirm: ConfirmationCallback | None = None,
         cancel_event=None,
     ) -> RunResult:
-        if sensitive_text_intent(goal):
-            plan = Plan(goal="<sensitive command>", steps=())
-            result = RunResult(
-                "blocked",
-                (),
-                (
-                    "Credential-like text entry is blocked before planning "
-                    "so the value is not sent to external models."
-                ),
-                plan,
-                0,
-            )
-            self._recent_context.append(
-                "A sensitive credential-entry command was blocked locally."
-            )
-            self._recent_context[:] = self._recent_context[-8:]
-            return result
+        plan = Plan(goal=goal, steps=(PlanStep(goal=goal, app=app, completion=goal),))
 
-        if cancel_event is not None and cancel_event.is_set():
-            empty_plan = Plan(goal=goal, steps=())
-            result = RunResult(
-                "cancelled",
-                (),
-                "Cancelled before execution.",
-                empty_plan,
-                0,
-            )
+        def stop(
+            status: str,
+            message: str,
+            steps: list[StepRecord],
+            completed: int = 0,
+        ) -> RunResult:
+            result = RunResult(status, tuple(steps), message, plan, completed)
             self._remember(goal, result)
             return result
 
-        direct_mode = isinstance(self._planner, PassThroughPlanner)
+        def cancelled() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+
+        if self._enforce_policy and sensitive_text_intent(goal):
+            return stop(
+                "blocked",
+                "Credential-like text entry is blocked before choosing an action.",
+                [],
+            )
+        if cancelled():
+            return stop("cancelled", "Cancelled before execution.", [])
+
+        # One revival budget for the whole run, shared by startup, fresh reads
+        # and post-action reads.
+        revivals = 0
         self._progress("Reading desktop state...")
-        desktop = await self._driver.desktop_overview(
-            include_screenshot=not direct_mode,
-            include_apps=not direct_mode,
+        try:
+            overview = await self._driver.desktop_overview(
+                include_screenshot=False,
+                include_apps=False,
+            )
+        except DriverRefusal as refusal:
+            if refusal.code != "session_ended":
+                raise
+            # A revival is allowed once; a second startup refusal propagates.
+            revivals += 1
+            self._progress("Reviving the Driver lifecycle session...")
+            await self._driver.revive_session()
+            overview = await self._driver.desktop_overview(
+                include_screenshot=False,
+                include_apps=False,
+            )
+        inventory: tuple[Mapping[str, object], ...] = tuple(overview.windows)
+        wanted_app = app or self._planner._infer_app(goal, overview)
+        target = self._select_target(
+            inventory, target=None, wanted_app=wanted_app, pending=False
         )
+        current: Observation = self._desktop_only(inventory)
+        for _ in range(2):
+            observed = await self._observe(inventory, target, app=wanted_app)
+            if observed == _REVIVED:
+                if revivals >= 1:
+                    return stop(
+                        "refused",
+                        "The Driver lifecycle session ended twice while starting.",
+                        [],
+                    )
+                revivals += 1
+                self._progress("Reviving the Driver lifecycle session...")
+                await self._driver.revive_session()
+                continue
+            current = observed
+            break
+        if current.desktop_windows:
+            inventory = tuple(current.desktop_windows)
+        if current.pid:
+            self._last_target = (current.pid, current.window_id)
         self._progress(
-            f"Desktop ready: {len(desktop.windows)} visible window(s), "
-            f"{len(desktop.apps)} known app(s)."
+            f"Desktop ready: {len(inventory)} window(s); targeting {current.app!r}."
         )
-        if direct_mode:
-            self._progress("Direct mode: one goal, no planner model call.")
-        else:
-            self._progress("Planning task...")
-        plan = await self._planner.plan(
-            goal,
-            desktop=desktop,
-            recent_context=self.recent_context,
-        )
-        if direct_mode:
-            self._progress("Direct goal ready.")
-        else:
-            self._progress(f"Plan ready: {len(plan.steps)} subgoal(s).")
+
+        apps: tuple[Mapping[str, object], ...] = ()
+        apps_loaded = False
+        launch_name: str | None = None
+        slots = self._local_slots(goal)
+        page = 0
         history: list[StepRecord] = []
-        global_step = 0
-        completed_subgoals = 0
+        failed_routes: dict[str, str] = {}
+        inspected: set[tuple[tuple[int, int], str]] = set()
+        auto_inspected: set[tuple[tuple[int, int], str]] = set()
+        fresh = False
+        refreshes = 0
+        step = 0
 
-        for subgoal_index, planned_step in enumerate(
-            plan.steps,
-            start=1,
-        ):
-            current = planned_step
-            if direct_mode:
-                self._progress(f"Goal: {current.goal}")
-            else:
-                self._progress(
-                    f"Subgoal {subgoal_index}/{len(plan.steps)}: {current.goal}"
+        while step < self._max_steps:
+            if cancelled():
+                return stop("cancelled", "Cancelled by the user.", history)
+
+            if fresh:
+                prior_fingerprint = current.fingerprint()
+                read = await self._read_state(
+                    target=target,
+                    wanted_app=wanted_app,
+                    pending=True,
+                    launch_name=launch_name,
                 )
-            repairs = 0
-            no_progress = 0
-            reobserve_count = 0
-            low_confidence_count = 0
-            force_visual_observation = False
-            reobserved_fingerprints: set[str] = set()
-            done_refuted_fingerprint: str | None = None
-            refuted_action_signatures: set[tuple[str | None, str]] = set()
-            last_candidate_id: str | None = None
-            repeat_count = 0
-            prepared: tuple[PreparedText, ...] | None = None
-
-            while global_step < self._max_steps:
-                if cancel_event is not None and cancel_event.is_set():
-                    result = RunResult(
-                        "cancelled",
-                        tuple(history),
-                        "Cancelled by the user.",
-                        plan,
-                        completed_subgoals,
-                    )
-                    self._remember(goal, result)
-                    return result
-
-                target_app = app or current.app
-                if (
-                    target_app
-                    and not await self._driver.has_window(target_app)
-                ):
-                    if not act:
-                        result = RunResult(
-                            "needs_launch",
-                            tuple(history),
-                            f"{target_app} is not open; acting mode would launch it.",
-                            plan,
-                            completed_subgoals,
+                if read == _REVIVED:
+                    if revivals >= 1:
+                        return stop(
+                            "refused",
+                            "The Driver lifecycle session ended twice in this run.",
+                            history,
                         )
-                        self._remember(goal, result)
-                        return result
-                    self._progress(f"Launching {target_app}...")
-                    await self._driver.ensure_app(target_app)
-                    self._progress(f"{target_app} is available.")
+                    revivals += 1
+                    self._progress("Reviving the Driver lifecycle session...")
+                    await self._driver.revive_session()
+                    # Keep launch_name until the read actually succeeds.
+                    continue
+                current, inventory, target = read
+                launch_name = None
+                if current.fingerprint() != prior_fingerprint:
+                    # A real state change invalidates paging and refresh pressure.
+                    page = 0
+                    refreshes = 0
+                fresh = False
 
-                include_screenshot = (
-                    not direct_mode or force_visual_observation
+            # An explicitly requested app with no window triggers one app
+            # inventory read so its matches can be offered; no silent redirect.
+            if wanted_app and target is None and not apps_loaded and not cancelled():
+                apps = await self._discover_apps()
+                apps_loaded = True
+                wanted = wanted_app.casefold().strip()
+                apps = tuple(
+                    app
+                    for app in apps
+                    if wanted in str(app.get("name") or "").casefold()
                 )
-                self._progress(
-                    f"Observing {target_app or 'current desktop window'}"
-                    + (" with screenshot..." if include_screenshot else "...")
+
+            context = current.fingerprint()
+            suppressed = {
+                candidate_id
+                for candidate_id, snapshot in failed_routes.items()
+                if snapshot == context
+            }
+            pool = self._build_pool(goal, current, slots)
+            # Paging is a session operation, not a window operation: keep it
+            # available so large inventories and app lists stay reachable.
+            pool.append(self._more_actions())
+            pool.extend(
+                self._session_candidates(
+                    inventory=inventory,
+                    target=target,
+                    apps=apps,
+                    suppressed=suppressed,
                 )
-                observation = await self._driver.observe(
-                    target_app,
-                    include_screenshot=include_screenshot,
+            )
+
+            # One-time lazy visual fallback: only when there is a real window,
+            # grounding capability exists, and no actionable semantic candidate
+            # is available. A keyboard shortcut is not grounding for an
+            # inaccessible canvas.
+            if (
+                target is not None
+                and self._has_vision()
+                and (target, context) not in auto_inspected
+                and not self._has_actionable(pool)
+            ):
+                auto_inspected.add((target, context))
+                self._progress("No grounded control found; grounding visually...")
+                inspected.add((target, context))
+                inspected_state, inspected_inventory = await self._inspect(
+                    goal, target, inventory
                 )
-                force_visual_observation = False
-                self._progress("Grounding current state...")
-                observation = await self._perceiver.enrich(
-                    current.goal,
-                    observation,
-                )
-                self._progress(
-                    f"Observed {observation.app} / {observation.window_title!r}: "
-                    f"{len(observation.elements)} semantic element(s), "
-                    f"{len(observation.visual_regions)} visual region(s)."
-                )
-                if prepared is None:
-                    self._progress("Preparing any requested text...")
-                    prepared = await self._prepared_texts(
-                        original_goal=goal,
-                        step=current,
-                        observation=observation,
+                if inspected_state is None:
+                    # The lifecycle session ended during the capture; let the
+                    # shared budget handle it on the next iteration.
+                    if revivals >= 1:
+                        return stop(
+                            "refused",
+                            "The Driver lifecycle session ended twice in this run.",
+                            history,
+                        )
+                    revivals += 1
+                    self._progress("Reviving the Driver lifecycle session...")
+                    await self._driver.revive_session()
+                    fresh = True
+                    continue
+                current = inspected_state
+                inventory = inspected_inventory
+                context = current.fingerprint()
+                suppressed = {
+                    candidate_id
+                    for candidate_id, snapshot in failed_routes.items()
+                    if snapshot == context
+                }
+                pool = self._build_pool(goal, current, slots)
+                pool.append(self._more_actions())
+                pool.extend(
+                    self._session_candidates(
+                        inventory=inventory,
+                        target=target,
+                        apps=apps,
+                        suppressed=suppressed,
                     )
+                )
 
-                observation_fingerprint = observation.fingerprint()
-                candidates = build_candidates(
-                    current.goal,
-                    observation,
-                    prepared_texts=prepared,
-                    max_candidates=self._max_candidates,
-                    allow_visual_clicks=self._driver.capture_bound_click,
-                    download_root=self._download_root,
-                    recent_files=self._download_tracker.validate_recent(
-                        self._recent_files
+            pool = [
+                candidate for candidate in pool if candidate.id not in suppressed
+            ]
+            observation = self._annotate(current, inventory, self.recent_context)
+            shortlist = shortlist_candidates(
+                goal,
+                pool,
+                limit=min(self._max_candidates, 32),
+                page=page,
+            )
+            self._progress(
+                f"Asking Jev with {len(shortlist)} of {len(pool)} candidate(s)."
+            )
+            decision = await self._chooser.choose(
+                # The original user instruction, unredacted: Jev must be able to
+                # compare the requested query/text with what it observes.
+                # Executable tool arguments and generated slot payloads stay
+                # local; only slot ids and purposes appear in the candidates.
+                goal=goal,
+                observation=observation,
+                candidates=shortlist,
+                history=history,
+            )
+            if cancelled():
+                return stop("cancelled", "Cancelled by the user.", history)
+            selected = self._resolve(decision.selected_id, shortlist, observation)
+            if selected is None:
+                return stop(
+                    "refused",
+                    "Jev selected a candidate that is not in the current set: "
+                    f"{decision.selected_id}",
+                    history,
+                )
+            step += 1
+            self._progress(f"Jev selected {selected.id}: {selected.description}")
+
+            def record(
+                outcome: str,
+                *,
+                effect: str | None = None,
+                executed: bool = False,
+                reason: str | None = None,
+            ) -> StepRecord:
+                return StepRecord(
+                    step,
+                    1,
+                    observation.snapshot_id,
+                    selected.id,
+                    selected.description,
+                    float(getattr(decision, "confidence", 0.0) or 0.0),
+                    executed,
+                    outcome,
+                    effect=effect,
+                    reason=reason,
+                )
+
+            # ---- session operations: no UI mutation, observation retained ----
+            if selected.id == MORE_ACTIONS:
+                page += 1
+                history.append(record("paged"))
+                continue
+            if selected.id == DISCOVER_APPS:
+                apps = await self._discover_apps()
+                apps_loaded = True
+                if apps:
+                    page = 0
+                    history.append(record("apps_discovered"))
+                else:
+                    failed_routes[selected.id] = context
+                    history.append(record("apps_unavailable"))
+                continue
+            if selected.id == PREPARE_TEXT:
+                if cancelled():
+                    return stop("cancelled", "Cancelled by the user.", history)
+                # The composer must see the annotated observation (bounded prior
+                # command/action context and the fresh window inventory), not the
+                # raw unannotated snapshot.
+                slots, produced = await self._prepare_text(
+                    goal, observation, history, slots
+                )
+                if produced:
+                    # The pool just expanded; start its paging from the top.
+                    page = 0
+                    history.append(record("text_prepared"))
+                else:
+                    failed_routes[selected.id] = context
+                    history.append(
+                        record(
+                            "text_unavailable",
+                            reason="no new text was produced for this state",
+                        )
+                    )
+                continue
+            if selected.id == INSPECT_SCREEN:
+                if target is None or (target, context) in inspected:
+                    failed_routes[selected.id] = context
+                    history.append(record("inspect_unavailable"))
+                    continue
+                inspected.add((target, context))
+                inspected_state, read_inventory = await self._inspect(
+                    goal, target, inventory
+                )
+                if inspected_state is None:
+                    # The lifecycle session ended during the capture. Keep the
+                    # previous observation and re-read on the next iteration.
+                    if revivals >= 1:
+                        return stop(
+                            "refused",
+                            "The Driver lifecycle session ended twice in this run.",
+                            history,
+                        )
+                    revivals += 1
+                    self._progress("Reviving the Driver lifecycle session...")
+                    await self._driver.revive_session()
+                    fresh = True
+                    continue
+                current = inspected_state
+                inventory = read_inventory
+                if current.visual_regions:
+                    page = 0
+                    history.append(record("inspected"))
+                else:
+                    failed_routes[selected.id] = current.fingerprint()
+                    history.append(record("inspect_no_regions"))
+                continue
+
+            # ---- mutating target changes: gated by dry-run and cancellation ---
+            if selected.id.startswith("switch-window-"):
+                if not act:
+                    history.append(record("dry_run"))
+                    return stop("dry_run", selected.description, history)
+                if cancelled():
+                    return stop("cancelled", "Cancelled by the user.", history)
+                brought = await self._bring_forward(selected)
+                target = (
+                    int(selected.arguments["pid"]),
+                    int(selected.arguments["window_id"]),
+                )
+                self._last_target = target
+                if brought.activated:
+                    history.append(record("switched", reason=brought.reason))
+                else:
+                    history.append(
+                        record(
+                            "target_selected",
+                            reason=(
+                                f"{brought.outcome}: {brought.reason}"
+                                if brought.reason
+                                else brought.outcome
+                            ),
+                        )
+                    )
+                fresh = True
+                continue
+            if selected.id.startswith("launch-app-"):
+                if not act:
+                    history.append(record("dry_run"))
+                    return stop("dry_run", selected.description, history)
+                if cancelled():
+                    return stop("cancelled", "Cancelled by the user.", history)
+                name = str(selected.arguments.get("name") or "")
+                try:
+                    await self._driver.ensure_app(name)
+                    outcome, reason = "launched", None
+                    # Resolve only this launched app's window on the next fresh
+                    # inventory; never launch automatically again.
+                    launch_name = name
+                except Exception as error:
+                    outcome, reason = "launch_failed", str(error)
+                    failed_routes[selected.id] = context
+                history.append(record(outcome, reason=reason))
+                fresh = True
+                continue
+
+            # ---- terminal and concrete actions -------------------------------
+            if selected.id == REOBSERVE:
+                refreshes += 1
+                history.append(record("reobserve"))
+                if refreshes > 2:
+                    failed_routes[selected.id] = context
+                    self._progress(
+                        "Repeated refresh requests on an unchanged state are "
+                        "suppressed so Jev must act, abstain, or report done."
+                    )
+                fresh = True
+                continue
+            if selected.id == ABSTAIN:
+                history.append(record("abstained"))
+                return stop("abstained", selected.description, history)
+            if selected.id == DONE:
+                history.append(record("done"))
+                return stop(
+                    "completed",
+                    "Jev reports the goal complete",
+                    history,
+                    completed=1,
+                )
+
+            if self._enforce_policy:
+                denial, approved = await self._policy_gate(
+                    selected, goal, approve_consequential, confirm
+                )
+                if denial is not None:
+                    history.append(record(denial.outcome))
+                    return stop(denial.status, denial.message, history)
+                if not approved:
+                    history.append(record("needs_confirmation"))
+                    return stop("needs_confirmation", selected.description, history)
+
+            if not act:
+                history.append(record("dry_run"))
+                return stop("dry_run", selected.description, history)
+
+            files_before = (
+                self._download_tracker.snapshot() if self._is_download(selected) else {}
+            )
+            self._progress(f"Executing: {selected.description}")
+            result_ref: dict = {}
+            outcome, reason, delivered = await self._execute(
+                selected,
+                act=act,
+                allow_foreground=allow_foreground,
+                cancel_event=cancel_event,
+                result_ref=result_ref,
+            )
+
+            if outcome == "session_revived":
+                if revivals >= 1:
+                    history.append(record("session_ended", reason=reason))
+                    return stop(
+                        "refused",
+                        "The Driver lifecycle session ended twice in this run.",
+                        history,
+                    )
+                revivals += 1
+                self._progress("Reviving the Driver lifecycle session...")
+                await self._driver.revive_session()
+                history.append(record("session_revived", reason=reason))
+                fresh = True
+                continue
+            if outcome in {"needs_foreground", "refused", "partial", "failed"}:
+                history.append(
+                    record(
+                        outcome,
+                        reason=reason,
+                        executed=bool(delivered),
+                    )
+                )
+                return stop(outcome, reason or outcome, history)
+            if outcome in {"cancelled", "cancelled_after_action"}:
+                history.append(record(outcome, executed=bool(delivered)))
+                return stop("cancelled", "Cancelled by the user.", history)
+
+            if files_before or self._is_download(selected):
+                changes = await self._download_tracker.wait_for_changes(
+                    files_before, timeout=5.0
+                )
+                if changes:
+                    names = ", ".join(f'"{s.name}"' for s in changes[:4])
+                    self._recent_files = self._download_tracker.validate_recent(
+                        tuple(s.path for s in changes) + self._recent_files
+                    )
+                    self._append_context(f"Local file resource changed: {names}.")
+
+            # The resulting state is the next iteration's observation, so no
+            # separate post-action observation is taken at the bottom.
+            read = await self._read_state(
+                target=target, wanted_app=wanted_app, pending=True
+            )
+            if read == _REVIVED:
+                history.append(record("session_ended", executed=bool(delivered)))
+                if revivals >= 1:
+                    return stop(
+                        "refused",
+                        "The Driver lifecycle session ended twice in this run.",
+                        history,
+                    )
+                revivals += 1
+                await self._driver.revive_session()
+                fresh = True
+                continue
+            nxt, inventory, target = read
+            changed = current.fingerprint() != nxt.fingerprint()
+            if not changed:
+                failed_routes[selected.id] = context
+                self._progress(
+                    "That route produced no observable change; it is suppressed on "
+                    "this state so Jev can pick another action."
+                )
+            else:
+                # A real state change invalidates paging and refresh pressure.
+                page = 0
+                refreshes = 0
+            history.append(
+                record(
+                    "executed" if changed else "executed_no_change",
+                    effect=self._effect(result_ref.get("result")),
+                    executed=bool(delivered),
+                    reason=(
+                        "state changed after the action"
+                        if changed
+                        else "no semantic state change detected"
                     ),
                 )
-                if (
-                    done_refuted_fingerprint is not None
-                    and done_refuted_fingerprint == observation_fingerprint
-                ):
-                    candidates = [
-                        candidate
-                        for candidate in candidates
-                        if candidate.id != DONE
-                    ]
-                    self._progress(
-                        "Completion was already refuted on this exact state; "
-                        "temporarily suppressing the done candidate."
-                    )
-                if observation_fingerprint in reobserved_fingerprints:
-                    before_count = len(candidates)
-                    candidates = [
-                        candidate
-                        for candidate in candidates
-                        if candidate.id != REOBSERVE
-                    ]
-                    if len(candidates) != before_count:
-                        self._progress(
-                            "Fresh observation is semantically unchanged; "
-                            "suppressing reobserve so Jev must choose an action, "
-                            "done, or abstain."
-                        )
-                if refuted_action_signatures:
-                    before_count = len(candidates)
-                    candidates = [
-                        candidate
-                        for candidate in candidates
-                        if (
-                            candidate.tool,
-                            candidate.description,
-                        )
-                        not in refuted_action_signatures
-                    ]
-                    suppressed = before_count - len(candidates)
-                    if suppressed:
-                        self._progress(
-                            f"Suppressing {suppressed} route(s) that were "
-                            "already tried and refuted without changing state."
-                        )
-                self._progress(
-                    f"Built {len(candidates)} candidate action(s); asking Jev..."
-                )
-                decision_goal = redact_prepared_text(
-                    current.goal,
-                    prepared,
-                )
-                decision = await self._chooser.choose(
-                    goal=decision_goal,
-                    observation=observation,
-                    candidates=candidates,
-                    history=history,
-                )
-                candidate = validate_decision(
-                    decision,
-                    candidates,
-                    current_snapshot_id=observation.snapshot_id,
-                    current_capture_id=observation.capture_id,
-                )
-                global_step += 1
-                assessment = assess_decision(
-                    decision,
-                    candidates,
-                    min_confidence=self._min_confidence,
-                )
-                self._progress(
-                    f"Jev selected {candidate.id} "
-                    f"({decision.confidence:.0%}; "
-                    f"p={assessment.selected_probability:.0%}, "
-                    f"runner-up={assessment.runner_up_probability:.0%}, "
-                    f"margin={assessment.margin:.0%}): "
-                    f"{candidate.description}"
-                )
+            )
+            self._append_context(
+                f"In {nxt.app} / {nxt.window_title!r}: {selected.description}. "
+                f"Resulting view: {nxt.browser_title or nxt.window_title!r}."
+            )
+            current = nxt
+            # This observation was taken after the action; reuse it and the
+            # single fresh inventory rather than listing again next iteration.
+            fresh = False
 
-                if candidate.id == last_candidate_id:
-                    repeat_count += 1
-                else:
-                    repeat_count = 1
-                    last_candidate_id = candidate.id
-
-                if not assessment.accepted:
-                    low_confidence_count += 1
-                    history.append(
-                        StepRecord(
-                            global_step,
-                            subgoal_index,
-                            observation.snapshot_id,
-                            candidate.id,
-                            candidate.description,
-                            decision.confidence,
-                            False,
-                            "low_confidence",
-                            reason=(
-                                f"{assessment.reason}; "
-                                f"p={assessment.selected_probability:.3f}, "
-                                f"runner_up={assessment.runner_up_probability:.3f}, "
-                                f"margin={assessment.margin:.3f}"
-                            ),
-                        )
-                    )
-                    if low_confidence_count < 2:
-                        if direct_mode:
-                            force_visual_observation = True
-                            self._progress(
-                                "Decision is ambiguous; doing one richer "
-                                "observation before deciding again."
-                            )
-                        else:
-                            self._progress(
-                                "Decision is ambiguous; re-observing once before "
-                                "spending a planner repair call."
-                            )
-                        continue
-                    if direct_mode:
-                        result = RunResult(
-                            "uncertain",
-                            tuple(history),
-                            (
-                                "Direct-mode decision remained ambiguous after "
-                                "one richer re-observation."
-                            ),
-                            plan,
-                            completed_subgoals,
-                        )
-                        self._remember(goal, result)
-                        return result
-                    if repairs < self._max_repairs:
-                        self._progress(
-                            "Decision stayed ambiguous; asking planner to repair "
-                            "the subgoal."
-                        )
-                        current = await self._planner.repair_step(
-                            original_goal=goal,
-                            current=current,
-                            observation=observation,
-                            history=history,
-                        )
-                        repairs += 1
-                        low_confidence_count = 0
-                        prepared = None
-                        continue
-                    result = RunResult(
-                        "uncertain",
-                        tuple(history),
-                        candidate.description,
-                        plan,
-                        completed_subgoals,
-                    )
-                    self._remember(goal, result)
-                    return result
-
-                low_confidence_count = 0
-
-                if candidate.id == DONE:
-                    self._progress("Jev says the subgoal is done; verifying independently...")
-                    verification = await self._verification(
-                        original_goal=goal,
-                        step=current,
-                        observation=observation,
-                        history=history,
-                    )
-                    history.append(
-                        StepRecord(
-                            global_step,
-                            subgoal_index,
-                            observation.snapshot_id,
-                            candidate.id,
-                            candidate.description,
-                            decision.confidence,
-                            False,
-                            (
-                                "verified_done"
-                                if verification.done
-                                else "done_refuted"
-                            ),
-                            reason=verification.reason,
-                        )
-                    )
-                    self._progress(
-                        f"Verifier: {'done' if verification.done else 'not done'} "
-                        f"({verification.confidence:.0%})"
-                        + (f" — {verification.reason}" if verification.reason else "")
-                    )
-                    if verification.done:
-                        completed_subgoals += 1
-                        self._progress(
-                            f"Subgoal {subgoal_index}/{len(plan.steps)} complete."
-                        )
-                        break
-                    done_refuted_fingerprint = observation.fingerprint()
-                    self._progress(
-                        "Completion was refuted; keeping the same subgoal and "
-                        "asking Jev for an actual action instead of replanning."
-                    )
-                    continue
-
-                if candidate.id == REOBSERVE:
-                    self._progress("Jev requested a fresh observation.")
-                    reobserve_count += 1
-                    reobserved_fingerprints.add(observation_fingerprint)
-                    history.append(
-                        StepRecord(
-                            global_step,
-                            subgoal_index,
-                            observation.snapshot_id,
-                            candidate.id,
-                            candidate.description,
-                            decision.confidence,
-                            False,
-                            "reobserve",
-                        )
-                    )
-                    if direct_mode:
-                        force_visual_observation = True
-                        self._progress(
-                            "Direct mode allows one reobserve for this state; "
-                            "the next unchanged state will suppress reobserve."
-                        )
-                        continue
-                    if (
-                        reobserve_count >= 2
-                        and repairs < self._max_repairs
-                    ):
-                        current = await self._planner.repair_step(
-                            original_goal=goal,
-                            current=current,
-                            observation=observation,
-                            history=history,
-                        )
-                        repairs += 1
-                        reobserve_count = 0
-                        prepared = None
-                    continue
-
-                if candidate.id == ABSTAIN:
-                    self._progress("Jev abstained from acting on the current state.")
-                    history.append(
-                        StepRecord(
-                            global_step,
-                            subgoal_index,
-                            observation.snapshot_id,
-                            candidate.id,
-                            candidate.description,
-                            decision.confidence,
-                            False,
-                            "abstained",
-                        )
-                    )
-                    if not direct_mode and repairs < self._max_repairs:
-                        current = await self._planner.repair_step(
-                            original_goal=goal,
-                            current=current,
-                            observation=observation,
-                            history=history,
-                        )
-                        repairs += 1
-                        prepared = None
-                        continue
-                    result = RunResult(
-                        "abstained",
-                        tuple(history),
-                        candidate.description,
-                        plan,
-                        completed_subgoals,
-                    )
-                    self._remember(goal, result)
-                    return result
-
-                if candidate.risk == "safe":
-                    contextual_risk = classify_risk(
-                        candidate.description,
-                        tool=candidate.tool,
-                    )
-                    if (
-                        candidate.tool in {"type_text", "browser_type"}
-                        and sensitive_text_intent(current.goal)
-                    ):
-                        candidate = replace(candidate, risk="deny")
-                    elif contextual_risk == "confirm":
-                        candidate = replace(candidate, risk="confirm")
-
-                if candidate.risk == "deny":
-                    history.append(
-                        StepRecord(
-                            global_step,
-                            subgoal_index,
-                            observation.snapshot_id,
-                            candidate.id,
-                            candidate.description,
-                            decision.confidence,
-                            False,
-                            "policy_denied",
-                        )
-                    )
-                    result = RunResult(
-                        "blocked",
-                        tuple(history),
-                        f"Policy denied: {candidate.description}",
-                        plan,
-                        completed_subgoals,
-                    )
-                    self._remember(goal, result)
-                    return result
-
-                if not act:
-                    history.append(
-                        StepRecord(
-                            global_step,
-                            subgoal_index,
-                            observation.snapshot_id,
-                            candidate.id,
-                            candidate.description,
-                            decision.confidence,
-                            False,
-                            "dry_run",
-                        )
-                    )
-                    result = RunResult(
-                        "dry_run",
-                        tuple(history),
-                        candidate.description,
-                        plan,
-                        completed_subgoals,
-                    )
-                    self._remember(goal, result)
-                    return result
-
-                if (
-                    candidate.risk == "confirm"
-                    and not approve_consequential
-                ):
-                    approved = (
-                        await confirm(candidate)
-                        if confirm is not None
-                        else False
-                    )
-                    if not approved:
-                        history.append(
-                            StepRecord(
-                                global_step,
-                                subgoal_index,
-                                observation.snapshot_id,
-                                candidate.id,
-                                candidate.description,
-                                decision.confidence,
-                                False,
-                                "needs_confirmation",
-                            )
-                        )
-                        result = RunResult(
-                            "needs_confirmation",
-                            tuple(history),
-                            candidate.description,
-                            plan,
-                            completed_subgoals,
-                        )
-                        self._remember(goal, result)
-                        return result
-
-                if cancel_event is not None and cancel_event.is_set():
-                    result = RunResult(
-                        "cancelled",
-                        tuple(history),
-                        "Cancelled by the user before the next action.",
-                        plan,
-                        completed_subgoals,
-                    )
-                    self._remember(goal, result)
-                    return result
-
-                files_before = self._download_tracker.snapshot()
-                executed_candidate: Candidate = candidate
-                self._progress(f"Executing: {candidate.description}")
-                try:
-                    action_result = await self._driver.execute(
-                        executed_candidate
-                    )
-                except DriverRefusal as refusal:
-                    if refusal.code == "session_ended":
-                        history.append(
-                            StepRecord(
-                                global_step,
-                                subgoal_index,
-                                observation.snapshot_id,
-                                candidate.id,
-                                candidate.description,
-                                decision.confidence,
-                                False,
-                                "session_revived",
-                                reason=refusal.reason,
-                            )
-                        )
-                        self._progress(
-                            "Driver lifecycle session ended; reviving it and "
-                            "re-observing before retrying."
-                        )
-                        await self._driver.revive_session()
-                        continue
-                    if (
-                        refusal.recommended == "foreground"
-                        and allow_foreground
-                    ):
-                        executed_candidate = (
-                            self._driver.with_foreground(candidate)
-                        )
-                        self._progress(
-                            "Background delivery was unavailable; retrying the same "
-                            "action with authorized foreground delivery..."
-                        )
-                        try:
-                            action_result = await self._driver.execute(
-                                executed_candidate
-                            )
-                        except DriverRefusal as foreground_refusal:
-                            if foreground_refusal.code == "session_ended":
-                                history.append(
-                                    StepRecord(
-                                        global_step,
-                                        subgoal_index,
-                                        observation.snapshot_id,
-                                        candidate.id,
-                                        candidate.description,
-                                        decision.confidence,
-                                        False,
-                                        "session_revived",
-                                        reason=foreground_refusal.reason,
-                                    )
-                                )
-                                self._progress(
-                                    "Foreground authorization ended the Driver "
-                                    "lifecycle session; reviving it and "
-                                    "re-observing before retrying."
-                                )
-                                await self._driver.revive_session()
-                                continue
-                            result = RunResult(
-                                "refused",
-                                tuple(history),
-                                str(foreground_refusal),
-                                plan,
-                                completed_subgoals,
-                            )
-                            self._remember(goal, result)
-                            return result
-                    else:
-                        history.append(
-                            StepRecord(
-                                global_step,
-                                subgoal_index,
-                                observation.snapshot_id,
-                                candidate.id,
-                                candidate.description,
-                                decision.confidence,
-                                False,
-                                (
-                                    "needs_foreground"
-                                    if refusal.recommended == "foreground"
-                                    else "refused"
-                                ),
-                                reason=refusal.reason,
-                            )
-                        )
-                        result = RunResult(
-                            (
-                                "needs_foreground"
-                                if refusal.recommended == "foreground"
-                                else "refused"
-                            ),
-                            tuple(history),
-                            str(refusal),
-                            plan,
-                            completed_subgoals,
-                        )
-                        self._remember(goal, result)
-                        return result
-
-                if cancel_event is not None and cancel_event.is_set():
-                    history.append(
-                        StepRecord(
-                            global_step,
-                            subgoal_index,
-                            observation.snapshot_id,
-                            candidate.id,
-                            candidate.description,
-                            decision.confidence,
-                            True,
-                            "cancelled_after_action",
-                        )
-                    )
-                    result = RunResult(
-                        "cancelled",
-                        tuple(history),
-                        "Cancelled by the user after the current action finished.",
-                        plan,
-                        completed_subgoals,
-                    )
-                    self._remember(goal, result)
-                    return result
-
-                self._progress("Action returned; checking resulting state...")
-                file_wait = (
-                    5.0
-                    if (
-                        candidate.tool == "browser_download"
-                        or "download" in candidate.description.casefold()
-                    )
-                    else 0.0
-                )
-                file_changes = await self._download_tracker.wait_for_changes(
-                    files_before,
-                    timeout=file_wait,
-                )
-                if file_changes:
-                    remembered = tuple(stamp.path for stamp in file_changes)
-                    self._recent_files = self._download_tracker.validate_recent(
-                        remembered + self._recent_files
-                    )
-                    file_names = ", ".join(
-                        f'"{stamp.name}"'
-                        for stamp in file_changes[:4]
-                    )
-                    self._recent_context.append(
-                        "Local file resource changed in the approved "
-                        f"download directory: {file_names}."
-                    )
-                    self._recent_context[:] = self._recent_context[-8:]
-
-                effect = (
-                    action_result.get("effect")
-                    if isinstance(action_result, dict)
-                    else None
-                )
-                self._progress("Re-observing after the action...")
-                after = await self._driver.observe(target_app)
-                after = await self._perceiver.enrich(
-                    current.goal,
-                    after,
-                )
-                changed = state_changed(observation, after)
-                if changed:
-                    done_refuted_fingerprint = None
-                    refuted_action_signatures.clear()
-                history.append(
-                    StepRecord(
-                        global_step,
-                        subgoal_index,
-                        observation.snapshot_id,
-                        candidate.id,
-                        candidate.description,
-                        decision.confidence,
-                        True,
-                        "executed",
-                        effect=(
-                            str(effect)
-                            if effect is not None
-                            else None
-                        ),
-                        reason=(
-                            "state changed"
-                            if changed
-                            else "no semantic state change detected"
-                        ),
-                    )
-                )
-
-                context_line = (
-                    f"Worked in {after.app} / {after.window_title!r}: "
-                    f"{candidate.description} "
-                    f"Resulting page/window: "
-                    f"{after.browser_title or after.window_title!r}."
-                )
-                self._recent_context.append(context_line)
-                self._recent_context[:] = self._recent_context[-8:]
-
-                self._progress(
-                    "State changed." if changed else "No semantic state change detected."
-                )
-                verification = Verification(
-                    False,
-                    0.0,
-                    "verification deferred until Jev signals done",
-                )
-                local = local_verification(
-                    original_goal=goal,
-                    step=current,
-                    observation=after,
-                )
-                if local is not None:
-                    verification = local
-                elif self._verify_every_action:
-                    self._progress("Verifying completion...")
-                    verification = await self._verification(
-                        original_goal=goal,
-                        step=current,
-                        observation=after,
-                        history=history,
-                    )
-                elif not isinstance(self._verifier, OpenRouterVerifier):
-                    verification = await self._verification(
-                        original_goal=goal,
-                        step=current,
-                        observation=after,
-                        history=history,
-                    )
-
-                if verification.confidence > 0.0 or verification.done:
-                    self._progress(
-                        f"Verifier: {'done' if verification.done else 'not done'} "
-                        f"({verification.confidence:.0%})"
-                        + (
-                            f" — {verification.reason}"
-                            if verification.reason
-                            else ""
-                        )
-                    )
-                else:
-                    self._progress(
-                        "Skipping remote verifier for this intermediate action."
-                    )
-                if verification.done:
-                    completed_subgoals += 1
-                    self._progress(
-                        f"Subgoal {subgoal_index}/{len(plan.steps)} complete."
-                    )
-                    break
-
-                if not changed and candidate.tool is not None:
-                    refuted_action_signatures.add(
-                        (candidate.tool, candidate.description)
-                    )
-                    escalation = (
-                        action_result.get("escalation")
-                        if isinstance(action_result, dict)
-                        else None
-                    )
-                    recommended = None
-                    if isinstance(escalation, dict):
-                        recommended = (
-                            escalation.get("recommended")
-                            or escalation.get("target")
-                        )
-                    detail = (
-                        f" Driver recommends {recommended}."
-                        if recommended
-                        else ""
-                    )
-                    self._progress(
-                        "That route did not satisfy the verifier; trying an "
-                        f"alternate route next.{detail}"
-                    )
-
-                no_progress = 0 if changed else no_progress + 1
-                if no_progress >= 2 or repeat_count >= 3:
-                    if direct_mode:
-                        result = RunResult(
-                            "stalled",
-                            tuple(history),
-                            (
-                                verification.reason
-                                or (
-                                    "Direct mode made no progress after multiple "
-                                    "distinct bounded attempts; stopping instead "
-                                    "of entering a planner/retry loop."
-                                )
-                            ),
-                            plan,
-                            completed_subgoals,
-                        )
-                        self._remember(goal, result)
-                        return result
-                    if repairs < self._max_repairs:
-                        current = await self._planner.repair_step(
-                            original_goal=goal,
-                            current=current,
-                            observation=after,
-                            history=history,
-                        )
-                        repairs += 1
-                        no_progress = 0
-                        repeat_count = 0
-                        prepared = None
-                        continue
-                    result = RunResult(
-                        "stalled",
-                        tuple(history),
-                        (
-                            verification.reason
-                            or "no progress after repeated actions"
-                        ),
-                        plan,
-                        completed_subgoals,
-                    )
-                    self._remember(goal, result)
-                    return result
-            else:
-                result = RunResult(
-                    "budget_exhausted",
-                    tuple(history),
-                    "step budget exhausted",
-                    plan,
-                    completed_subgoals,
-                )
-                self._remember(goal, result)
-                return result
-
-        self._progress(
-            "Goal completed." if direct_mode else "All planned subgoals completed."
+        return stop(
+            "budget_exhausted",
+            "The step budget was exhausted before Jev reported completion.",
+            history,
         )
-        result = RunResult(
-            "completed",
-            tuple(history),
-            (
-                "Goal independently verified."
-                if direct_mode
-                else "All planned subgoals were independently verified."
-            ),
-            plan,
-            completed_subgoals,
+
+    # -- selection helpers --------------------------------------------------
+    @staticmethod
+    def _has_actionable(pool: list[Candidate]) -> bool:
+        """True when a candidate can act on the window's actual controls."""
+        for candidate in pool:
+            if candidate.source == SESSION_SOURCE or candidate.source == "terminal":
+                continue
+            if candidate.id in {DONE, REOBSERVE, ABSTAIN, MORE_ACTIONS}:
+                continue
+            if candidate.steps:
+                return True
+            if candidate.tool in {
+                "click",
+                "double_click",
+                "right_click",
+                "type_text",
+                "browser_click",
+                "browser_type",
+                "browser_pointer",
+                "browser_navigate",
+                "browser_download",
+                "browser_set_input_files",
+            }:
+                return True
+        return False
+
+    @staticmethod
+    def _annotate(
+        observation: Observation,
+        inventory: tuple[Mapping[str, object], ...],
+        recent_context: tuple[str, ...],
+    ) -> Observation:
+        """Attach the bounded prior-command context and the fresh inventory.
+
+        Used both for the Jev decision and for the text composer, so the composer
+        receives `recent_context` rather than a raw snapshot.
+        """
+        return replace(
+            observation,
+            recent_context=recent_context,
+            desktop_windows=inventory,
         )
-        self._remember(goal, result)
-        return result
+
+    def _local_slots(self, goal: str) -> tuple[PreparedText, ...]:
+        slots = list(quoted_text_slots(goal))
+        for slot in inferred_text_slots(goal):
+            if all(existing.text != slot.text for existing in slots):
+                slots.append(slot)
+        return tuple(slots)
+
+    def _resolve(
+        self,
+        selected_id: str,
+        candidates: list[Candidate],
+        observation: Observation,
+    ) -> Candidate | None:
+        by_id: dict[str, Candidate] = {}
+        for candidate in candidates:
+            if candidate.id in by_id:
+                raise ValueError("candidate table contains duplicate IDs")
+            by_id[candidate.id] = candidate
+        candidate = by_id.get(selected_id)
+        if candidate is None:
+            return None
+        if (
+            candidate.snapshot_id is not None
+            and candidate.snapshot_id != observation.snapshot_id
+        ):
+            self._progress("Rejecting a candidate bound to a stale snapshot.")
+            return None
+        return candidate
+
+    async def _inspect(
+        self,
+        goal: str,
+        target: tuple[int, int],
+        inventory: tuple[Mapping[str, object], ...],
+    ) -> tuple[Observation | None, tuple[Mapping[str, object], ...]]:
+        """Re-observe the same window with a screenshot.
+
+        Returns (observation, inventory), or (None, inventory) when the Driver
+        lifecycle session ended. Other refusals propagate: a failed capture is
+        never reported as a read.
+        """
+        try:
+            captured = await self._driver.observe(
+                None,
+                include_screenshot=True,
+                windows=inventory,
+                target_window=target,
+            )
+        except DriverRefusal as refusal:
+            if refusal.code == "session_ended":
+                return None, inventory
+            # A refused capture is a real failure; never claim a read happened.
+            raise
+        refreshed = tuple(captured.desktop_windows) or inventory
+        return await self._enrich(goal, captured), refreshed

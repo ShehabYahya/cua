@@ -66,6 +66,37 @@ def _screenshot_error(state: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _result_text(result: Any) -> str | None:
+    for part in getattr(result, "content", None) or []:
+        if getattr(part, "type", None) != "text":
+            continue
+        text = getattr(part, "text", None)
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return None
+
+
+# Browser semantic refs expose a `visibility` enum
+# (cua-driver-core/src/browser/store.rs: BrowserVisibility). semantic.rs:749-776:
+# NearViewport does NOT intersect the viewport, only its expanded margin.
+def _browser_visible(raw_value: Any) -> bool | None:
+    if not isinstance(raw_value, str):
+        return None
+    value = raw_value.casefold()
+    if value == "in_viewport":
+        return True
+    if value in {"near_viewport", "offscreen", "css_hidden", "no_layout", "page_occluded"}:
+        return False
+    return None
+
+
+def _bool_state(states: Any, key: str) -> bool | None:
+    if not isinstance(states, Mapping):
+        return None
+    value = states.get(key)
+    return value if isinstance(value, bool) else None
+
+
 def _visual_regions(
     payload: Mapping[str, Any],
     *,
@@ -115,6 +146,8 @@ class CuaMcpDriver:
         self._tool_schemas: dict[str, dict[str, Any]] = {}
         self._temp_dir: str | None = None
         self.capture_bound_click = False
+        self.coordinate_click_supported = False
+        self._browser_route_unavailable: set[tuple[int, int]] = set()
 
     async def __aenter__(self) -> "CuaMcpDriver":
         self._stack = AsyncExitStack()
@@ -150,6 +183,8 @@ class CuaMcpDriver:
                     schema if isinstance(schema, dict) else {}
                 )
             self.capture_bound_click = self.has_property("click", "capture_id")
+            self.coordinate_click_supported = self._supports_coordinate_click()
+            self._browser_route_unavailable.clear()
             if self.has_tool("start_session"):
                 await self._call("start_session", {})
             return self
@@ -166,6 +201,7 @@ class CuaMcpDriver:
                 await self._call("end_session", {})
             except Exception:
                 pass
+        self._browser_route_unavailable.clear()
         self._stack = None
         self._session = None
         if stack is not None:
@@ -175,6 +211,34 @@ class CuaMcpDriver:
         if not self.has_tool("start_session"):
             raise RuntimeError("Cua Driver does not advertise start_session")
         await self._call("start_session", {})
+        self._browser_route_unavailable.clear()
+
+    def _supports_coordinate_click(self) -> bool:
+        schema = self._tool_schemas.get("click") or {}
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return False
+        if "x" not in properties or "y" not in properties:
+            return False
+        if "target" in properties:
+            return True
+        return "pid" in properties and "window_id" in properties
+
+    def _prune_browser_route_cache(
+        self,
+        windows: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+    ) -> None:
+        if not self._browser_route_unavailable:
+            return
+        present: set[tuple[int, int]] = set()
+        for window in windows:
+            if not isinstance(window, Mapping):
+                continue
+            pid = window.get("pid")
+            window_id = window.get("window_id")
+            if isinstance(pid, int) and isinstance(window_id, int):
+                present.add((pid, window_id))
+        self._browser_route_unavailable &= present
 
     def has_tool(self, name: str) -> bool:
         return name in self._tool_schemas
@@ -200,37 +264,67 @@ class CuaMcpDriver:
         data = result.structuredContent
         if isinstance(data, dict):
             refusal = data.get("refusal")
+            refusal_map = refusal if isinstance(refusal, Mapping) else {}
             code = data.get("code")
+            if not isinstance(code, str) or not code:
+                nested_code = refusal_map.get("code")
+                code = (
+                    nested_code
+                    if isinstance(nested_code, str) and nested_code
+                    else None
+                )
             refused = (
                 data.get("status") == "refused"
+                or data.get("effect") == "refused"
                 or refusal is not None
-                or (
-                    bool(result.isError)
-                    and isinstance(code, str)
-                    and code
-                )
+                or (bool(result.isError) and isinstance(code, str) and bool(code))
             )
             if refused:
                 detail = data.get("detail")
-                reason_value = (
-                    refusal.get("reason")
-                    if isinstance(refusal, Mapping)
-                    else None
-                )
-                if not reason_value and isinstance(detail, Mapping):
+                detail_map = detail if isinstance(detail, Mapping) else {}
+                nested_detail = refusal_map.get("detail")
+                if not detail_map and isinstance(nested_detail, Mapping):
+                    detail_map = nested_detail
+                error = data.get("error")
+                error_map = error if isinstance(error, Mapping) else {}
+
+                reason_value: Any = None
+                if isinstance(refusal, str) and refusal.strip():
+                    reason_value = refusal.strip()
+                for source in (refusal_map, detail_map, error_map):
+                    if reason_value:
+                        break
+                    reason_value = source.get("reason")
+                for source in (refusal_map, detail_map, error_map):
+                    if reason_value:
+                        break
+                    reason_value = source.get("message")
+                if not reason_value:
                     reason_value = (
-                        detail.get("reason")
-                        or detail.get("message")
+                        code
+                        or data.get("message")
+                        or _result_text(result)
                     )
                 if not reason_value:
-                    reason_value = code or refusal or data
-                escalation = data.get("escalation")
+                    reason_value = data
+
+                escalation: Mapping[str, Any] | None = None
+                for candidate_map in (
+                    data.get("escalation"),
+                    refusal_map.get("escalation"),
+                    detail_map.get("escalation"),
+                ):
+                    if isinstance(candidate_map, Mapping):
+                        escalation = candidate_map
+                        break
                 recommended = None
-                if isinstance(escalation, Mapping):
-                    recommended = (
+                if escalation is not None:
+                    candidate_target = (
                         escalation.get("target")
                         or escalation.get("recommended")
                     )
+                    if isinstance(candidate_target, str) and candidate_target:
+                        recommended = candidate_target
                 raise DriverRefusal(
                     name,
                     str(reason_value),
@@ -304,6 +398,9 @@ class CuaMcpDriver:
             "perception": {
                 "parse_visual_regions": "parse_visual_regions" in names,
                 "capture_bound_click": self.capture_bound_click,
+            },
+            "input": {
+                "coordinate_click_supported": self.coordinate_click_supported,
             },
             "health_report": "health_report" in names,
         }
@@ -580,11 +677,19 @@ class CuaMcpDriver:
     ]:
         if not self.has_tool("get_browser_state"):
             return (), None, None, None, None
+        if (pid, window_id) in self._browser_route_unavailable:
+            return (), None, None, None, None
         try:
             bind = await self._call(
                 "get_browser_state",
                 {"pid": pid, "window_id": window_id},
             )
+        except DriverRefusal as error:
+            if error.code == "session_ended":
+                raise
+            if error.code == "browser_route_unavailable":
+                self._browser_route_unavailable.add((pid, window_id))
+            return (), None, None, None, None
         except Exception:
             return (), None, None, None, None
         if (
@@ -621,6 +726,12 @@ class CuaMcpDriver:
                     "snapshot_format": "semantic_v2",
                 },
             )
+        except DriverRefusal as error:
+            if error.code == "session_ended":
+                raise
+            if error.code == "browser_route_unavailable":
+                self._browser_route_unavailable.add((pid, window_id))
+            return (), None, None, None, None
         except Exception:
             return (), None, None, None, None
         if snapshot.get("status") != "ok":
@@ -658,10 +769,15 @@ class CuaMcpDriver:
                             if raw.get("value") is not None
                             else None
                         ),
+                        selected=_bool_state(states, "selected"),
                         actions=actions,
                         bounds=None,
                         source="browser",
                         browser_ref=ref,
+                        focused=_bool_state(states, "focused"),
+                        visible=_browser_visible(raw.get("visibility")),
+                        expanded=_bool_state(states, "expanded"),
+                        checked=_bool_state(states, "checked"),
                     )
                 )
         page = snapshot.get("page")
@@ -688,8 +804,36 @@ class CuaMcpDriver:
         app: str | None = None,
         *,
         include_screenshot: bool = True,
+        windows: tuple[Mapping[str, Any], ...] | None = None,
+        target_window: tuple[int, int] | None = None,
     ) -> Observation:
-        window = self._choose_window(await self.list_windows(), app)
+        inventory = (
+            tuple(windows)
+            if windows is not None
+            else tuple(await self.list_windows())
+        )
+        self._prune_browser_route_cache(inventory)
+        if target_window is not None:
+            wanted_pid = int(target_window[0])
+            wanted_window_id = int(target_window[1])
+            window = next(
+                (
+                    candidate
+                    for candidate in inventory
+                    if candidate.get("pid") == wanted_pid
+                    and candidate.get("window_id") == wanted_window_id
+                ),
+                None,
+            )
+            if window is None:
+                raise RuntimeError(
+                    "target window pid="
+                    f"{wanted_pid} window_id={wanted_window_id} is no longer "
+                    "present in the current window inventory; re-observe before "
+                    "acting instead of substituting another window"
+                )
+        else:
+            window = self._choose_window(list(inventory), app)
         pid = int(window["pid"])
         window_id = int(window["window_id"])
         args: dict[str, Any] = {
@@ -762,6 +906,24 @@ class CuaMcpDriver:
                     ),
                     actions=actions,
                     bounds=_rect(raw.get("frame")),
+                    parent_index=(
+                        int(raw["parent_index"])
+                        if isinstance(raw.get("parent_index"), int)
+                        else None
+                    ),
+                    depth=(
+                        int(raw["depth"])
+                        if isinstance(raw.get("depth"), int)
+                        else None
+                    ),
+                    in_web_content=(
+                        raw.get("in_web_content")
+                        if isinstance(raw.get("in_web_content"), bool)
+                        else None
+                    ),
+                    # The native WindowElement contract exposes no
+                    # focused/visible/expanded/checked field, so they stay None
+                    # rather than being inferred from `selected`.
                 )
             )
         (
@@ -869,6 +1031,12 @@ class CuaMcpDriver:
             browser_tab_id=browser_tab_id,
             browser_url=browser_url,
             browser_title=browser_title,
+            desktop_windows=inventory,
+            screenshot_frame_valid=(
+                state.get("screenshot_frame_valid")
+                if isinstance(state.get("screenshot_frame_valid"), bool)
+                else None
+            ),
         )
 
     def _compatible_arguments(

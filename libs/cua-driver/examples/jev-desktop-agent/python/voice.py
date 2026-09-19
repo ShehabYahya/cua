@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import math
 import shutil
@@ -18,20 +19,34 @@ class LocalSpeaker:
         self.enabled = enabled
         self.binary = shutil.which("spd-say") or shutil.which("espeak-ng") or shutil.which("espeak")
 
-    def say(self, text: str) -> None:
-        print(f"[assistant] {text}")
+    def show(self, text: str) -> None:
+        print(f"[assistant] {text}", flush=True)
+
+    async def say(self, text: str) -> None:
+        self.show(text)
         if not self.enabled or not self.binary or not text.strip():
             return
         try:
-            subprocess.run(
-                [self.binary, text[:1200]],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=30,
-                check=False,
-            )
+            # Speech runs in a worker thread and is awaited, so TTS never blocks
+            # the asyncio event loop and is never left as fire-and-forget.
+            await asyncio.to_thread(self._speak_sync, text)
         except Exception:
             pass
+
+    def _speak_sync(self, text: str) -> None:
+        command = [self.binary]
+        if self.binary.endswith("spd-say"):
+            # Without --wait spd-say returns before speech finishes, so awaiting
+            # the worker thread would not await speech completion.
+            command.append("--wait")
+        command.append(text[:1200])
+        subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
 
 
 class Microphone:
@@ -137,16 +152,59 @@ class VoiceAssistant:
         speak: bool = False,
         microphone_device=None,
         allow_foreground: bool = False,
+        silence_seconds: float = 0.5,
     ) -> None:
         self.agent = agent
         self.client = client
         self.stt_model = stt_model
         self.language = language
         self.speaker = LocalSpeaker(speak)
-        self.microphone = Microphone(device=microphone_device)
+        self.microphone = Microphone(
+            device=microphone_device,
+            silence_seconds=silence_seconds,
+        )
         self.allow_foreground = allow_foreground
         self._monitor_stop = threading.Event()
         self._monitor_pause = threading.Event()
+        # In-flight transcriptions are tracked so they can be drained at final
+        # shutdown, but never waited on between commands.
+        self._transcriptions: set[asyncio.Future] = set()
+        self._session_active = False
+
+    async def _transcribe(self, wav: bytes) -> str | None:
+        task = asyncio.ensure_future(
+            asyncio.to_thread(
+                self.client.transcribe_wav,
+                wav,
+                model=self.stt_model,
+                language=self.language,
+            )
+        )
+        self._transcriptions.add(task)
+        task.add_done_callback(self._forget_transcription)
+        # Shield so cancelling the monitor does not cancel the in-flight
+        # transcription; it is tracked and drained only at final shutdown.
+        return await asyncio.shield(task)
+
+    def _forget_transcription(self, task: asyncio.Future) -> None:
+        """Drop a finished transcription without leaking an unretrieved error.
+
+        An orphaned task (for example one whose monitor was cancelled before it
+        finished) would otherwise log "exception was never retrieved". Normal
+        awaiting still receives the result, because the exception is only
+        consumed from this callback, which runs after completion.
+        """
+        self._transcriptions.discard(task)
+        if task.cancelled():
+            return
+        task.exception()
+
+    async def _drain_transcriptions(self) -> None:
+        pending = [
+            task for task in self._transcriptions if not task.done()
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _listen_text(
         self,
@@ -156,7 +214,7 @@ class VoiceAssistant:
         pause_event: threading.Event | None = None,
     ) -> str | None:
         if announce:
-            self.speaker.say("Listening.")
+            self.speaker.show("Listening.")
         wav = await asyncio.to_thread(
             self.microphone.record,
             stop_event=stop_event,
@@ -164,12 +222,13 @@ class VoiceAssistant:
         )
         if not wav:
             return None
-        text = await asyncio.to_thread(
-            self.client.transcribe_wav,
-            wav,
-            model=self.stt_model,
-            language=self.language,
-        )
+        text = await self._transcribe(wav)
+        # A monitor transcription can outlive a cancelled task; ignore its
+        # result once the monitor is stopped or paused, before printing it.
+        if (stop_event is not None and stop_event.is_set()) or (
+            pause_event is not None and pause_event.is_set()
+        ):
+            return None
         if text:
             print(f"[heard] {text}")
         return text or None
@@ -177,7 +236,9 @@ class VoiceAssistant:
     async def _confirm(self, candidate: Candidate) -> bool:
         self._monitor_pause.set()
         await asyncio.sleep(self.microphone.BLOCK_SECONDS * 2)
-        self.speaker.say(f"Confirm: {candidate.description} Say yes or no.")
+        await self.speaker.say(
+            f"Confirm: {candidate.description} Say yes or no."
+        )
         try:
             for _ in range(2):
                 answer = await self._listen_text()
@@ -192,7 +253,12 @@ class VoiceAssistant:
         finally:
             self._monitor_pause.clear()
 
-    async def _monitor_cancellation(self, cancel_event: asyncio.Event) -> None:
+    async def _monitor_cancellation(
+        self,
+        cancel_event: asyncio.Event,
+        monitor_stop: threading.Event,
+        monitor_pause: threading.Event,
+    ) -> None:
         cancel_words = {
             "cancel",
             "stop",
@@ -202,30 +268,37 @@ class VoiceAssistant:
             "never mind",
             "nevermind",
         }
-        while not self._monitor_stop.is_set() and not cancel_event.is_set():
-            if self._monitor_pause.is_set():
+        while not monitor_stop.is_set() and not cancel_event.is_set():
+            if monitor_pause.is_set():
                 await asyncio.sleep(0.1)
                 continue
             try:
                 answer = await self._listen_text(
                     announce=False,
-                    stop_event=self._monitor_stop,
-                    pause_event=self._monitor_pause,
+                    stop_event=monitor_stop,
+                    pause_event=monitor_pause,
                 )
             except Exception:
                 return
             if not answer:
                 continue
+            if monitor_stop.is_set() or monitor_pause.is_set():
+                # Stale result from a transcription that outlived this monitor.
+                return
             normalized = answer.casefold().strip(" .!?\n")
             if normalized in cancel_words:
                 cancel_event.set()
-                self.speaker.say("Cancelling.")
+                await self.speaker.say("Cancelling.")
                 return
 
     async def execute_command(self, command: str) -> RunResult:
         cancel_event = asyncio.Event()
-        self._monitor_stop.clear()
-        self._monitor_pause.clear()
+        # Fresh per-command monitor events; a cancelled monitor's tokens are
+        # never reused or cleared for the next command.
+        monitor_stop = threading.Event()
+        monitor_pause = threading.Event()
+        self._monitor_stop = monitor_stop
+        self._monitor_pause = monitor_pause
         run_task = asyncio.create_task(
             self.agent.run(
                 command,
@@ -236,40 +309,55 @@ class VoiceAssistant:
             )
         )
         monitor_task = asyncio.create_task(
-            self._monitor_cancellation(cancel_event)
+            self._monitor_cancellation(
+                cancel_event,
+                monitor_stop,
+                monitor_pause,
+            )
         )
         try:
             return await run_task
         finally:
-            self._monitor_stop.set()
-            self._monitor_pause.clear()
-            try:
-                await asyncio.wait_for(monitor_task, timeout=2.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                monitor_task.cancel()
+            monitor_stop.set()
+            monitor_pause.clear()
+            monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await monitor_task
+            if not self._session_active:
+                # One-shot voice: this is final shutdown, so drain any in-flight
+                # transcription before the shared client is closed.
+                await self._drain_transcriptions()
 
     async def run_forever(self) -> None:
-        self.speaker.say("Voice computer control is ready.")
-        while True:
-            try:
-                command = await self._listen_text()
-            except KeyboardInterrupt:
-                return
-            if not command:
-                continue
-            normalized = command.casefold().strip(" .!?\n")
-            if normalized in {"quit", "exit", "stop listening", "goodbye"}:
-                self.speaker.say("Stopping voice control.")
-                return
-            if normalized in {"cancel", "never mind", "nevermind"}:
-                self.speaker.say("Cancelled.")
-                continue
-            try:
-                result = await self.execute_command(command)
-            except Exception as error:
-                self.speaker.say(f"The command failed: {error}")
-                continue
-            if result.status == "completed":
-                self.speaker.say("Done.")
-            else:
-                self.speaker.say(f"Stopped with {result.status}. {result.message}")
+        self._session_active = True
+        try:
+            await self.speaker.say("Voice computer control is ready.")
+            while True:
+                try:
+                    command = await self._listen_text()
+                except KeyboardInterrupt:
+                    return
+                if not command:
+                    continue
+                normalized = command.casefold().strip(" .!?\n")
+                if normalized in {"quit", "exit", "stop listening", "goodbye"}:
+                    await self.speaker.say("Stopping voice control.")
+                    return
+                if normalized in {"cancel", "never mind", "nevermind"}:
+                    await self.speaker.say("Cancelled.")
+                    continue
+                try:
+                    result = await self.execute_command(command)
+                except Exception as error:
+                    await self.speaker.say(f"The command failed: {error}")
+                    continue
+                if result.status == "completed":
+                    await self.speaker.say("Done.")
+                else:
+                    await self.speaker.say(
+                        f"Stopped with {result.status}. {result.message}"
+                    )
+        finally:
+            self._session_active = False
+            # Drain only at final voice shutdown, never between commands.
+            await self._drain_transcriptions()

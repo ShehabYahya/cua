@@ -74,6 +74,13 @@ class Element:
     bounds: Rect | None = None
     source: str = "accessibility"
     browser_ref: str | None = None
+    parent_index: int | None = None
+    depth: int | None = None
+    in_web_content: bool | None = None
+    focused: bool | None = None
+    visible: bool | None = None
+    expanded: bool | None = None
+    checked: bool | None = None
 
     def compact(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -87,6 +94,20 @@ class Element:
             payload["value"] = "<set>" if self.value else ""
         if self.selected is not None:
             payload["selected"] = self.selected
+        if self.parent_index is not None:
+            payload["parent_index"] = self.parent_index
+        if self.depth is not None:
+            payload["depth"] = self.depth
+        if self.in_web_content is not None:
+            payload["in_web_content"] = self.in_web_content
+        if self.focused is not None:
+            payload["focused"] = self.focused
+        if self.visible is not None:
+            payload["visible"] = self.visible
+        if self.expanded is not None:
+            payload["expanded"] = self.expanded
+        if self.checked is not None:
+            payload["checked"] = self.checked
         if self.actions:
             payload["actions"] = list(self.actions[:8])
         if self.bounds:
@@ -137,6 +158,9 @@ class Observation:
     browser_tab_id: str | None = None
     browser_url: str | None = None
     browser_title: str | None = None
+    desktop_windows: tuple[Mapping[str, Any], ...] = ()
+    recent_context: tuple[str, ...] = ()
+    screenshot_frame_valid: bool | None = None
 
     def compact(self, *, limit: int = 96, visual_limit: int = 32) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -162,20 +186,78 @@ class Observation:
             }
         if self.screenshot_error:
             payload["screenshot_error"] = self.screenshot_error[:300]
+        if self.recent_context:
+            payload["recent_context"] = list(self.recent_context[-8:])
+        if self.desktop_windows:
+            payload["desktop_windows"] = [
+                {
+                    "pid": window.get("pid"),
+                    "window_id": window.get("window_id"),
+                    "app_name": window.get("app_name"),
+                    "title": window.get("title"),
+                    "z_index": window.get("z_index"),
+                    "is_on_screen": window.get("is_on_screen"),
+                    "minimized": window.get("minimized"),
+                }
+                for window in self.desktop_windows[:12]
+            ]
         return payload
 
     def fingerprint(self) -> str:
-        material = {
+        material: dict[str, Any] = {
+            # Window identity is part of the state so suppressions and paging
+            # cannot leak between identically titled windows.
+            "pid": self.pid,
+            "window_id": self.window_id,
             "app": self.app,
             "window": self.window_title,
             "elements": [
-                [e.role, e.label, e.value, e.selected, e.enabled]
-                for e in self.elements[:250]
+                [
+                    e.role,
+                    e.label,
+                    e.value,
+                    e.selected,
+                    e.enabled,
+                    e.focused,
+                    e.visible,
+                    e.expanded,
+                    e.checked,
+                    e.parent_index,
+                    e.depth,
+                    e.in_web_content,
+                ]
+                for e in self.elements
             ],
             "visual": [[r.label, r.kind] for r in self.visual_regions[:80]],
             "browser_url": self.browser_url,
             "browser_title": self.browser_title,
         }
+        if self.pid == 0:
+            # Desktop selection has no window state of its own, so its entire
+            # inventory is the observable state. Full inventory, deterministic
+            # order, never truncated. snapshot_id/capture_id/recent_context are
+            # deliberately excluded: they would register false changes on every
+            # capture or context append.
+            material["desktop_inventory"] = sorted(
+                (
+                    {
+                        "pid": window.get("pid"),
+                        "window_id": window.get("window_id"),
+                        "app_name": window.get("app_name"),
+                        "title": window.get("title"),
+                        "is_on_screen": window.get("is_on_screen"),
+                        "minimized": window.get("minimized"),
+                        "z_index": window.get("z_index"),
+                    }
+                    for window in self.desktop_windows
+                ),
+                key=lambda item: (
+                    item["pid"] if isinstance(item["pid"], int) else -1,
+                    item["window_id"]
+                    if isinstance(item["window_id"], int)
+                    else -1,
+                ),
+            )
         raw = json.dumps(material, sort_keys=True, ensure_ascii=False).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()[:20]
 
@@ -220,6 +302,7 @@ class Candidate:
     capture_id: str | None = None
     source: str = "semantic"
     risk: str = "safe"
+    steps: tuple[Candidate, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.id or not isinstance(self.id, str):
@@ -229,6 +312,7 @@ class Candidate:
         if self.risk not in {"safe", "confirm", "deny"}:
             raise ValueError("candidate risk must be safe, confirm, or deny")
         object.__setattr__(self, "arguments", _freeze(dict(self.arguments)))
+        object.__setattr__(self, "steps", tuple(self.steps))
 
 
 @dataclass(frozen=True)
@@ -292,6 +376,7 @@ ConfirmationCallback = Callable[[Candidate], Awaitable[bool]]
 
 class DesktopDriver(Protocol):
     capture_bound_click: bool
+    coordinate_click_supported: bool
 
     async def desktop_overview(
         self,
@@ -302,6 +387,10 @@ class DesktopDriver(Protocol):
 
     async def has_window(self, app: str) -> bool: ...
 
+    async def list_windows(self) -> list[dict[str, Any]]: ...
+
+    async def list_apps(self) -> list[dict[str, Any]]: ...
+
     async def ensure_app(self, app: str) -> None: ...
 
     async def revive_session(self) -> None: ...
@@ -311,6 +400,8 @@ class DesktopDriver(Protocol):
         app: str | None = None,
         *,
         include_screenshot: bool = True,
+        windows: tuple[Mapping[str, Any], ...] | None = None,
+        target_window: tuple[int, int] | None = None,
     ) -> Observation: ...
 
     async def execute(self, candidate: Candidate) -> Mapping[str, Any]: ...

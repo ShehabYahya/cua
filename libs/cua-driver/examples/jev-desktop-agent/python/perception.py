@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,11 +25,14 @@ def _dedupe(
     regions: list[VisualRegion],
 ) -> tuple[VisualRegion, ...]:
     kept: list[VisualRegion] = []
-    semantic_bounds = [e.bounds for e in observation.elements if e.bounds]
+    # Screenshot-space regions are only compared with other screenshot-space
+    # regions. Native/browser element bounds have no proven shared coordinate
+    # space, so they are never used to suppress a visual region.
+    visual_bounds = [region.bounds for region in observation.visual_regions]
     for region in regions:
         if any(
             bound and _iou(region.bounds, bound) >= 0.55
-            for bound in semantic_bounds
+            for bound in visual_bounds
         ):
             continue
         kept.append(region)
@@ -63,34 +65,9 @@ class OpenRouterVisionPerceiver:
         if not path.is_file():
             return observation
 
-        goal_words = {
-            word
-            for word in re.findall(r"[a-z0-9]+", goal.casefold())
-            if len(word) > 1
-        }
-        evidence_labels = [
-            element.label
-            for element in observation.elements
-            if element.label
-        ] + [
-            region.label
-            for region in observation.visual_regions
-            if region.label
-        ]
-        evidence_words = {
-            word
-            for label in evidence_labels
-            for word in re.findall(r"[a-z0-9]+", label.casefold())
-            if len(word) > 1
-        }
-        already_grounded = bool(goal_words & evidence_words)
-        if (
-            already_grounded
-            and not observation.degraded
-            and not observation.truncated
-        ):
-            return observation
-
+        # No lexical-overlap early exit: a menu word matching the goal is not
+        # proof of grounding. If invoked with a real screenshot, make one
+        # bounded vision request.
         try:
             regions, summary = await asyncio.to_thread(
                 self._parse_sync,

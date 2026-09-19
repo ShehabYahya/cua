@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 import json
 import math
 import os
 import re
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from typing import Any, Callable
 
 from confidence import assess_decision
@@ -43,10 +45,89 @@ def _state(
     goal: str,
     observation: Observation,
     history: list[StepRecord],
+    candidates: list[Candidate],
 ) -> dict[str, Any]:
+    # Show the state of the controls Jev can actually choose, even when they
+    # occur after the menu tree. Arguments remain local; compact() masks values.
+    from policy import field_is_sensitive
+
+    indices: set[int] = set()
+    refs: set[str] = set()
+
+    def remember_targets(candidate: Candidate) -> None:
+        index = candidate.arguments.get("element_index")
+        if isinstance(index, int):
+            indices.add(index)
+        ref = candidate.arguments.get("ref")
+        if isinstance(ref, str):
+            refs.add(ref)
+        for step in candidate.steps:
+            remember_targets(step)
+
+    for candidate in candidates:
+        remember_targets(candidate)
+
+    elements = tuple(
+        sorted(
+            observation.elements,
+            key=lambda e: (
+                e.index not in indices and e.browser_ref not in refs,
+                e.focused is not True and e.selected is not True,
+            ),
+        )
+    )
+
+    # Ordinary editable text is offered as bounded semantic UI state so a
+    # decision can rewrite existing content; it is never an executable argument.
+    editable_roles = {
+        "edit",
+        "entry",
+        "textbox",
+        "textarea",
+        "searchfield",
+        "combobox",
+        "textfield",
+        "textentry",
+    }
+
+    def role_key(role: str) -> str:
+        value = re.sub(r"[^a-z]", "", role.casefold())
+        return value[2:] if value.startswith("ax") else value
+
+    editable = [
+        element
+        for element in observation.elements
+        if "password" not in role_key(element.role)
+        and "secure" not in role_key(element.role)
+        and not field_is_sensitive(element.label)
+        and (
+            role_key(element.role) in editable_roles
+            or any(
+                "type" in action.casefold() or "edit" in action.casefold()
+                for action in element.actions
+            )
+        )
+    ]
+    # Focused fields first, then candidate targets, then other ordinary fields.
+    editable.sort(
+        key=lambda element: (
+            0 if element.focused is True else 1,
+            0 if element.index in indices or element.browser_ref in refs else 1,
+        )
+    )
+    observed_field_text = [
+        {
+            "index": element.index,
+            "label": element.label,
+            "value": (element.value or "")[:2000],
+        }
+        for element in editable[:8]
+    ]
+
     return {
         "goal": goal,
-        "observation": observation.compact(),
+        "observation": replace(observation, elements=elements).compact(),
+        "observed_field_text": observed_field_text,
         "history": _history(history),
     }
 
@@ -56,6 +137,7 @@ class TypeSafeChooser:
 
     def __init__(self, client: Any | None = None) -> None:
         self._client = client
+        self._owns_client = client is None
 
     async def choose(
         self,
@@ -84,7 +166,7 @@ class TypeSafeChooser:
 
         criteria = _criteria(candidates)
         request = {
-            "state": _state(goal, observation, history),
+            "state": _state(goal, observation, history, candidates),
             "questions": {
                 "driver_action": Choice(
                     instructions=(
@@ -100,11 +182,9 @@ class TypeSafeChooser:
             },
         }
 
-        if self._client is not None:
-            response = self._client.system_one(**request)
-        else:
-            with TypeSafeClient() as client:
-                response = client.system_one(**request)
+        if self._client is None:
+            self._client = TypeSafeClient()
+        response = self._client.system_one(**request)
 
         answer = response.choices["driver_action"]
         if answer.choice not in criteria:
@@ -130,6 +210,12 @@ class TypeSafeChooser:
             model=model if isinstance(model, str) else None,
         )
 
+    def close(self) -> None:
+        if self._owns_client and self._client is not None:
+            client = self._client
+            self._client = None
+            client.close()
+
 
 class OpenRouterChooser:
     """OpenRouter Decisions API route for TypeSafe Jev."""
@@ -147,7 +233,10 @@ class OpenRouterChooser:
         self._api_key = api_key
         self._model = model
         self._timeout = timeout
-        self._opener = opener or urllib.request.urlopen
+        self._opener = opener
+        # Owned pooled client, used only when no opener was injected. httpx.Client
+        # is thread-safe and keeps connections alive for the adapter's lifetime.
+        self._http_client = httpx.Client(follow_redirects=True) if opener is None else None
 
     async def choose(
         self,
@@ -175,7 +264,7 @@ class OpenRouterChooser:
         criteria = _criteria(candidates)
         payload = {
             "model": self._model,
-            "state": _state(goal, observation, history),
+            "state": _state(goal, observation, history, candidates),
             "questions": {
                 "driver_action": {
                     "type": "choice",
@@ -197,23 +286,47 @@ class OpenRouterChooser:
                 "allow_fallbacks": False,
             },
         }
-        request = urllib.request.Request(
-            OPENROUTER_ENDPOINT,
-            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-        )
+        data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
 
         try:
-            with self._opener(request, timeout=self._timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
+            if self._opener is not None:
+                # Injected opener keeps the original urllib-style response/error path.
+                request = urllib.request.Request(
+                    OPENROUTER_ENDPOINT,
+                    data=data,
+                    method="POST",
+                    headers=headers,
+                )
+                with self._opener(request, timeout=self._timeout) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+            else:
+                response = self._http_client.post(
+                    OPENROUTER_ENDPOINT,
+                    content=data,
+                    headers=headers,
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+                body = json.loads(response.content.decode("utf-8"))
         except urllib.error.HTTPError as error:
             # Never include the response body: it may echo private request data.
             raise RuntimeError(f"OpenRouter Jev HTTP {error.code}") from None
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        except httpx.HTTPStatusError as error:
+            # Never include the response body: it may echo private request data.
+            raise RuntimeError(
+                f"OpenRouter Jev HTTP {error.response.status_code}"
+            ) from None
+        except (
+            urllib.error.URLError,
+            httpx.HTTPError,
+            TimeoutError,
+            OSError,
+            json.JSONDecodeError,
+        ):
             raise RuntimeError("OpenRouter Jev request failed") from None
 
         answers = body.get("answers")
@@ -254,6 +367,12 @@ class OpenRouterChooser:
             probabilities=probabilities,
             model=model if isinstance(model, str) else self._model,
         )
+
+    def close(self) -> None:
+        if self._http_client is not None:
+            client = self._http_client
+            self._http_client = None
+            client.close()
 
 
 def chooser_from_env(provider: str = "auto") -> TypeSafeChooser | OpenRouterChooser:
@@ -355,8 +474,20 @@ def _relevant_shortlist(
         reverse=True,
     )
     room = max(0, limit - len(terminals))
-    selected = [item[2] for item in ranked[:room]]
+    # These routes were reserved by the builder. Lexical matches in a large
+    # menu must not evict typing or keyboard recovery at this second budget.
+    reserved = [c for c in actions if c.source in {"shortcut", "keyboard"}]
+    reserved += [
+        c for c in actions if c.tool in {"type_text", "browser_type"} and c not in reserved
+    ][:4]
+    selected = reserved[:room]
     selected_ids = {candidate.id for candidate in selected}
+    for _, _, candidate in ranked:
+        if len(selected) >= room:
+            break
+        if candidate.id not in selected_ids:
+            selected.append(candidate)
+            selected_ids.add(candidate.id)
 
     # Keep a small hedge of the builder's already relevance-sorted actions so
     # synonym mismatches do not make lexical shortlisting brittle.
@@ -515,3 +646,8 @@ class HierarchicalChooser:
             probabilities=leaf.probabilities,
             model=leaf.model or group_decision.model,
         )
+
+    def close(self) -> None:
+        close = getattr(self.inner, "close", None)
+        if close is not None:
+            close()

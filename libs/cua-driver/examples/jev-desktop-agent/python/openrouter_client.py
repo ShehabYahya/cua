@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import httpx
 import json
 import mimetypes
 import os
@@ -51,24 +52,50 @@ class OpenRouterClient:
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY is required")
         self.timeout = timeout
-        self._opener = opener or urllib.request.urlopen
+        self._opener = opener
+        # Owned pooled client, used only when no opener was injected. httpx.Client
+        # is thread-safe, so voice transcription and model threads may share it.
+        self._http_client = httpx.Client(follow_redirects=True) if opener is None else None
 
     def _post(self, endpoint: str, payload: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-        )
+        data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
         try:
-            with self._opener(request, timeout=timeout or self.timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
+            if self._opener is not None:
+                # Injected opener keeps the original urllib-style response/error path.
+                request = urllib.request.Request(
+                    endpoint,
+                    data=data,
+                    method="POST",
+                    headers=headers,
+                )
+                with self._opener(request, timeout=timeout or self.timeout) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+            else:
+                response = self._http_client.post(
+                    endpoint,
+                    content=data,
+                    headers=headers,
+                    timeout=timeout or self.timeout,
+                )
+                response.raise_for_status()
+                body = json.loads(response.content.decode("utf-8"))
         except urllib.error.HTTPError as error:
             raise RuntimeError(f"OpenRouter HTTP {error.code}") from None
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        except httpx.HTTPStatusError as error:
+            raise RuntimeError(
+                f"OpenRouter HTTP {error.response.status_code}"
+            ) from None
+        except (
+            urllib.error.URLError,
+            httpx.HTTPError,
+            TimeoutError,
+            OSError,
+            json.JSONDecodeError,
+        ):
             raise RuntimeError("OpenRouter request failed") from None
         if not isinstance(body, dict):
             raise RuntimeError("OpenRouter returned a malformed response")
@@ -162,3 +189,9 @@ class OpenRouterClient:
         if not isinstance(text, str):
             raise RuntimeError("OpenRouter transcription response has no text")
         return text.strip()
+
+    def close(self) -> None:
+        if self._http_client is not None:
+            client = self._http_client
+            self._http_client = None
+            client.close()

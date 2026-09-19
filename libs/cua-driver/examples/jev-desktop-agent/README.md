@@ -1,80 +1,116 @@
 # Jev desktop agent
 
 A general desktop-control harness on top of **Cua Driver** and **TypeSafe Jev**.
-The application owns planning, perception, candidate construction, policy,
-execution, recovery, and verification. Jev sees only a bounded set of candidate
-IDs/descriptions and selects the next action.
+The harness owns observation, candidate construction, local execution, recovery,
+and a small amount of opt-in policy. Jev is a **categorical selector**: it sees a
+bounded set of candidate IDs and descriptions plus bounded ordinary text from
+editable fields, and returns exactly one supplied ID; it never invents tool
+names, targets, coordinates, or arguments.
 
-This implementation is designed around the boundary accepted in Cua RFC #3931:
-Driver owns desktop authority; the harness constructs complete actions; Jev never
-invents tool names, targets, coordinates, or arguments.
+This implementation follows the boundary accepted in Cua RFC #3931: Driver owns
+desktop authority; the harness constructs complete actions.
 
-## End-to-end architecture
+## Default behavior
+
+An ordinary decision is **one fresh observation plus one Jev request**. Each
+iteration reads the window inventory once, observes exactly one target window,
+builds the complete local action pool, shortens it to a bounded Jev choice set,
+asks Jev once, and executes at most one selected operation. The resulting-state
+read *is* the next iteration's observation. There is no planner, no independent
+verifier, no confidence gate, and no separate post-action observation.
+
+`done` means Jev reports the goal complete; the harness does not independently
+verify it. Sensitive-field filtering and consequential-action confirmation are
+**opt-in** with `--confirm-actions`. Without it there is no harness policy gate
+and Jev chooses from the offered candidates.
 
 ```text
 voice or text command
         |
-        +--> direct single-goal mode (default; no planner model call)
-        |       or
-        +--> optional OpenRouter planner (--planner)
+        v
+Cua desktop overview (window inventory first; apps only when needed)
         |
         v
-Cua desktop overview (visible windows first; richer inventory only when needed)
+target window (one observation; app discovery/launch is lazy)
         |
         v
-select/launch target app
-        |
-        v
-Cua get_window_state
-  | accessibility tree
-  | screenshot
-  | capture_id (when supported)
+Cua get_window_state: accessibility tree, optional screenshot, optional capture_id
         |
         +--> Cua local visual parser when installed
         |       or
-        +--> OpenRouter vision fallback
+        +--> OpenRouter vision fallback (lazy, request-driven)
         |
         v
-bounded candidate table
-(click/type/hotkey/scroll/visual + done/reobserve/abstain)
+local candidate pool
+  click/type/hotkey/scroll/visual + typed browser refs
+  + operation bundles (fill-and-submit, browser search, new-tab search)
+  + session operations (switch/app/inspect/prepare-text/more-actions)
+  + done/reobserve/abstain
         |
         v
-OpenRouter Decisions API --> TypeSafe Jev chooses ONE supplied ID
+local shortlist -> at most 32 candidates
+  (terminals, session ops, bundles, keyboard recovery and typing reserved;
+   goal-relevant actions and a paged tail fill the rest)
         |
         v
-local policy + stale-state validation
+one Jev request (OpenRouter Decisions API) -> one supplied ID
         |
         v
-Cua executes at most one action
+local stale-state validation --> Cua executes at most one operation
         |
         v
-fresh observation --> next Jev action
-        |
-        +--> full verifier only when Jev says done
-        +--> stuck detection / optional repair planner / foreground escalation gate
+resulting state read == next iteration's observation
 ```
 
 ## What is implemented
 
-- Persistent Cua Driver MCP session.
+- Persistent Cua Driver MCP session and one lifecycle session reused for the
+  whole process (text or a multi-command voice session).
+- One shared `OpenRouterClient` for vision, writing, and transcription plus one
+  Jev chooser, all closed once at shutdown.
 - GNOME/Wayland-safe child environment (`IsEnabled` accessibility advertisement;
   no `ScreenReaderEnabled` advertisement that can launch Orca).
 - Native Wayland opt-in when a Wayland session is detected.
-- Fast direct mode is the default: the entire user command stays one goal and
-  does not make a planner-model call. Visible windows are read first; app
-  inventory and desktop screenshots are skipped until needed.
-- Optional multi-subgoal OpenRouter planning with `--planner`.
-- Automatic app launch for locally inferred or planner-selected applications.
-- Runtime preflight diagnostics through `--check`, including Driver health,
-  visible-window/app counts, visual/capture capabilities, and GNOME Wayland
-  remediation hints.
-- Per-window **accessibility + screenshot** observation on every step.
+- Lazy, request-driven observation: the window inventory is read first; app
+  inventory, desktop/window screenshots, and visual grounding are acquired only
+  when semantic grounding is unavailable or Jev asks to inspect.
+- Lazy app discovery and launch: the loop never launches an app on its own. Jev
+  can select a session candidate that discovers or launches an app from Driver's
+  real app inventory, never from a model-invented executable path.
+- Locally built **operation bundles** Jev can select: fill-and-submit for a
+  grounded editable control, browser address/type/submit, and new-tab plus
+  address/type/submit when the goal asks for a new tab. Bundles are offers, never
+  regex-triggered execution.
+- Text visibility: Jev receives the **original user instruction** (it is not
+  redacted) plus bounded ordinary observed editable field text
+  (`observed_field_text`, at most 8 fields, 2000 characters each, with password
+  and other sensitive fields excluded). Executable tool arguments and generated
+  slot payloads stay local: choice descriptions carry only the slot id and
+  purpose (`text-N` plus purpose), never the prepared or generated text itself.
+  Common search/rename text is extracted locally, and Jev can select
+  `prepare-text` to request additional ordinary text lazily from the writer
+  model; because the writer produces that text, it is the generated text that is
+  withheld from Jev, while the original instruction is still sent.
+- Bounded ordinary field text is visible to the chooser: the Jev state includes
+  `observed_field_text` for up to 8 editable fields, each value truncated to
+  2000 characters, with password and other sensitive fields excluded. The text
+  composer receives the same ordinary field text (up to 8 fields, 4000
+  characters each) plus the current app/window and recent context.
+- Bounded final shortlist: terminals, session operations, operation bundles,
+  keyboard recovery, and typing are reserved before goal-relevant and remaining
+  actions. Paging exposes the rest of the pool so a large tree does not lose its
+  tail. `--max-candidates` defaults to 32 and accepts 4..32.
+- Per-window **accessibility** observation on every iteration. Screenshots are
+  lazy: a screenshot is captured only when semantic grounding is unavailable or
+  Jev selects the inspect session candidate.
 - Correct AT-SPI role handling including `push button`, `page tab`, `entry`,
   menu/list/radio/check controls, and action-advertising widgets.
-- Optional Cua `parse_visual_regions` integration.
-- OpenRouter vision fallback for inaccessible/custom-drawn controls.
-- Capture-bound visual clicks only when Driver advertises `click.capture_id`;
-  the harness never downgrades a stale visual click to an unbound coordinate.
+- Optional Cua `parse_visual_regions` integration; OpenRouter vision is a lazy
+  fallback for inaccessible/custom-drawn controls.
+- Canonical screenshot coordinates: when the advertised Driver supports them,
+  visual clicks use region-center pixels directly without requiring an optional
+  `capture_id`, and attach `capture_id` when Driver provides one. No handcrafted
+  OS scale conversion.
 - Dynamic semantic actions, prepared-text typing, focused-window typing fallback,
   common hotkeys (including F2 rename), double/right click where requested,
   scrolling, visual actions, `done`, `reobserve`, and `abstain`.
@@ -84,44 +120,39 @@ fresh observation --> next Jev action
   such as Firefox continue through native accessibility/visual control. The
   harness never auto-attaches to a personal browser profile or grants browser
   debugging consent.
-- Hierarchical Jev action selection: large desktop action pools are grouped and
-  narrowed through bounded Jev choices, while each individual Jev request stays
-  at 32 candidates or fewer.
+- Large accessibility trees retain typing and keyboard recovery routes through
+  both candidate budgets. Jev's bounded state view prioritizes candidate targets
+  and selected controls; progress detection covers the full observed tree.
 - OpenRouter Jev route through `POST /api/alpha/decisions` using
   `~typesafe/jev-latest` by default.
-- OpenRouter writer, visual grounding, and postcondition verifier using
-  `openrouter/auto` by default; the planner is opt-in. Common search/rename
-  text is extracted locally instead of spending a writer-model call.
-- One-goal execution by default with fresh state after every mutation; optional
-  multi-subgoal execution when `--planner` is explicitly enabled.
-- Remote verification is deferred until Jev proposes `done` by default.
-  Deterministic local checks verify common states such as typed text, a new tab,
-  and search-result pages without a model call. `--verify-every-action`
-  restores the slower full-verifier behavior.
-- Margin- and risk-aware Jev confidence policy, no-progress detection,
-  repeated-action suppression, and bounded recovery.
+- OpenRouter writer and visual grounding using `openrouter/auto` by default.
+  Common search/rename text is extracted locally instead of spending a
+  writer-model call.
+- In-process conversational context persists across text iterations and voice
+  commands (the last eight summaries), so follow-ups work without restating the
+  task.
+- One operation executed per observation, followed by the resulting-state read;
+  repeated no-progress actions are suppressed instead of blindly retried.
 - Explicit Cua lifecycle-session management and automatic revival after a
   `session_ended` refusal.
-- Local consequential-action confirmation policy (send/publish/delete/pay/
-  install/permission/account actions) and hard refusal to generate/type password,
-  OTP, card-security-code, recovery-code, private-key, or seed-phrase fields.
-- Explicit foreground escalation gate: foreground is used only after Driver asks
-  for it and only with `--allow-foreground`.
-- In-process conversational context for follow-ups during voice sessions.
+- Explicit Driver/foreground boundary: background delivery is always tried
+  first, and foreground is used only after Driver explicitly requests escalation
+  and only with `--allow-foreground`.
 - Bounded local download-resource memory: only the approved download directory
   (default `~/Downloads`) is watched, recursively to two levels, without reading
   file contents. Newly downloaded/renamed files can be handed back to exact
   `browser_set_input_files` refs without exposing absolute paths to Jev.
 - Typed browser downloads to an approved directory and typed browser uploads of
-  recently observed local files, both behind the consequential-action gate.
+  recently observed local files.
 - Voice mode with VAD microphone capture, OpenRouter transcription, spoken
-  confirmation of consequential actions, and optional local TTS.
+  results and confirmations, and optional non-blocking local TTS.
 
 ## Prerequisites
 
 Use the newest Cua Driver available on the machine. Older Driver versions can
-run the semantic path, but full visual grounding requires the newer capture-ID
-and capture-bound-click contracts.
+run the semantic path; full visual grounding and canonical coordinate clicks
+require a Driver that advertises those capabilities. Canonical coordinates work
+without an optional capture ID when the installed Driver supports them.
 
 ```bash
 cua-driver update
@@ -166,15 +197,14 @@ Set your OpenRouter key locally. Do **not** paste it into chat or commit it:
 export OPENROUTER_API_KEY='...'
 ```
 
-Optional model overrides:
+Optional overrides:
 
 ```bash
 export JEV_MODEL='~typesafe/jev-latest'
-export JEV_DESKTOP_PLANNER_MODEL='openrouter/auto'
 export JEV_DESKTOP_VISION_MODEL='openrouter/auto'
-export JEV_DESKTOP_VERIFIER_MODEL='openrouter/auto'
 export JEV_DESKTOP_WRITER_MODEL='openrouter/auto'
 export JEV_DESKTOP_STT_MODEL='openai/whisper-1'
+export JEV_DESKTOP_DOWNLOAD_ROOT='/absolute/path/to/downloads'
 ```
 
 ## Preflight
@@ -185,18 +215,25 @@ Before the first live run:
 uv run python/cli.py --check
 ```
 
-A healthy setup reports the advertised native/browser/perception capabilities
-and whether Driver can see windows/apps and capture the desktop. On GNOME
-Wayland, a degraded result normally points directly at Driver upgrade or the
-WinRects helper.
+`--check` is the explicit diagnostics path: it reports Driver health,
+advertised native/browser/perception capabilities, and whether Driver can see
+windows/apps and capture the desktop. A healthy setup reports its capabilities;
+on GNOME Wayland, a degraded result normally points directly at a Driver upgrade
+or the WinRects helper. Normal startup does not run this health probe.
 
-## Tests
+## Verification status
+
+This redesign was checked with **syntax/import checks only** (`py_compile` on the
+changed modules). The unit test suite was **not run** for this redesign, and no
+measured latency, reliability, or live-desktop proof is claimed. The existing
+legacy tests were written against earlier behavior and may need updates before
+they pass.
+
+The legacy unit suite is credential-free and does not operate the desktop:
 
 ```bash
 uv run python -m unittest discover -s python/tests -v
 ```
-
-The unit suite is credential-free and does not operate the desktop.
 
 ## Text mode
 
@@ -210,8 +247,7 @@ uv run python/cli.py \
   --json
 ```
 
-Execute a real goal. By default this is **one agent goal**, not a planner-made
-step list:
+Execute a real goal:
 
 ```bash
 uv run python/cli.py \
@@ -222,35 +258,29 @@ uv run python/cli.py \
   --json
 ```
 
-For tasks that genuinely benefit from explicit decomposition, opt in:
+`--allow-foreground` does **not** force foreground input. The harness always
+tries Driver's background route first and uses foreground only if Driver
+explicitly returns a foreground escalation.
+
+By default the harness applies no policy gate. To opt in to sensitive-field
+filtering and confirmation before consequential actions:
 
 ```bash
---planner
+--confirm-actions
 ```
 
-For debugging or high-assurance runs that should invoke the full verifier after
-every mutation instead of only at `done`:
+With `--confirm-actions`, a consequential action asks for confirmation in the
+terminal; pre-authorize those actions for a trusted scripted run with:
 
 ```bash
---verify-every-action
+--confirm-actions --approve-consequential
 ```
-
-`--allow-foreground` does **not** force foreground input. The harness always tries
-Driver's background route first and uses foreground only if Driver explicitly
-returns a foreground escalation.
 
 For typed browser downloads the harness uses `~/Downloads` when it exists. Set
 a different already-existing approved directory with:
 
 ```bash
 --download-root /absolute/path/to/downloads
-```
-
-Consequential actions stop for confirmation by default. For a trusted scripted
-run you can pre-authorize that policy gate with:
-
-```bash
---approve-consequential
 ```
 
 ## Voice mode
@@ -267,13 +297,26 @@ Add local spoken responses if `spd-say`, `espeak-ng`, or `espeak` is installed:
 uv run python/cli.py --voice --speak --provider openrouter --allow-foreground
 ```
 
+Set how much trailing silence ends a spoken command (default `0.5` seconds,
+valid `0.1`-`10.0`):
+
+```bash
+uv run python/cli.py --voice --voice-silence 0.8 --provider openrouter
+```
+
 Voice mode listens until you finish speaking, sends the WAV to OpenRouter's
-transcription endpoint, runs the same desktop agent, and asks for a spoken yes/no
-before consequential actions. While a command is running, a parallel microphone
-monitor accepts spoken `cancel`, `stop`, `stop now`, or `never mind`; the
-agent stops before the next action (or immediately after the current atomic
-Driver/provider call returns). Say `stop listening` or `goodbye` between
-commands to exit the voice session. Ctrl-C remains an immediate local interrupt.
+transcription endpoint, and runs the same reusable agent and Driver session as
+text mode. Results and requested confirmations are spoken when `--speak` is
+enabled; `Listening` is printed rather than spoken before each command. TTS runs
+in a worker thread and is awaited, so speech never blocks the asyncio event loop
+or the microphone monitor.
+
+While a command is running, a parallel microphone monitor accepts spoken
+`cancel`, `stop`, `stop now`, or `never mind`; the agent stops before the next
+action (or after the current atomic Driver/provider call returns). Spoken
+cancellation cannot interrupt a network call already in flight. Say
+`stop listening` or `goodbye` between commands to exit the voice session. Ctrl-C
+remains an immediate local interrupt.
 
 **Privacy note:** screenshot/chat requests use OpenRouter's no-data-collection +
 ZDR routing controls. OpenRouter's transcription endpoint currently does not
@@ -284,28 +327,42 @@ OpenRouter.
 ## Safety / execution invariants
 
 1. Every element token/index belongs to one fresh Cua snapshot.
-2. Every raw visual click requires the exact current Driver `capture_id`.
+2. Visual clicks use the current screenshot's pixels; an optional capture ID is
+   attached only when Driver provides one.
 3. Jev receives IDs/descriptions, not Driver arguments or credentials.
-4. Prepared typed text stays local to the executable candidate; Jev sees a text
-   slot such as `text-1`, and field values are masked as `<set>` in Jev state.
-5. One action is executed per observation, followed by reobservation.
-6. `done` is not trusted by itself; the verifier must confirm the postcondition.
-7. Repeated no-progress actions are suppressed instead of blindly retried; the
-   planner is consulted only when planner mode was explicitly enabled.
-8. Passwords/OTP/card-security-code/recovery/private-key/seed fields are not
-   automatically filled.
-9. Consequential actions require confirmation unless explicitly pre-authorized.
-10. Foreground input is an explicit user authorization and only follows a Driver
-    escalation from the background route.
+4. Jev receives the original user instruction plus bounded ordinary
+   `observed_field_text` (at most 8 fields, 2000 characters each, password and
+   other sensitive fields excluded). Prepared and generated slot payloads stay
+   local to the executable candidate; Jev sees only a slot id such as `text-1`
+   and its purpose, never the prepared or generated text.
+5. At most one operation is executed per observation, followed by the
+   resulting-state read.
+6. `done` yields status `completed` with the message "Jev reports the goal
+   complete". It is Jev's assessment, not independent verification.
+7. Repeated no-progress actions are suppressed instead of blindly retried.
+8. Sensitive-field filtering and consequential confirmation apply only with
+   `--confirm-actions`; `--approve-consequential` pre-authorizes the confirmed
+   set.
+9. Foreground input is an explicit user authorization and only follows a Driver
+   escalation from the background route.
 
 ## Known boundaries
 
 This is a complete end-to-end **v1 harness**, not a claim of universal desktop
 reliability. Apps with inaccessible custom canvases still depend on screenshot
-availability and visual grounding. Generic completion verification is model-
-assisted because arbitrary third-party applications do not expose a universal
-postcondition API. Important irreversible outcomes should still use an
-application-specific readback/oracle when one exists.
+availability and visual grounding. There is no independent completion
+verification in the default loop: `done` is Jev's own assessment. Important
+irreversible outcomes should still use an application-specific readback/oracle
+when one exists.
 
-Cua Driver remains the body. This harness is the planning/decision/recovery layer;
+The large-tree search regression is tested with simulated desktop state and
+the real candidate/shortlist/agent loop. New-tab and address-bar shortcuts use
+Command on macOS and Control on Windows/Linux. These checks do not certify
+native delivery on those platforms. On Linux, missing desktop display access
+or an AppArmor denial of Snap Firefox accessibility calls can block observation
+from an agent process even when terminal execution works. Verify the complete
+search from the same desktop session and process environment that will run
+voice commands.
+
+Cua Driver remains the body. This harness is the decision/recovery layer;
 it does not modify Driver's public action authority or embed Jev inside Driver.
