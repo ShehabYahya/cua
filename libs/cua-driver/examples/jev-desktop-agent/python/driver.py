@@ -330,18 +330,24 @@ class CuaMcpDriver:
                     f"Cua Driver health_report could not be read: {error}"
                 )
 
-        if (
-            sys.platform.startswith("linux")
-            and os.getenv("WAYLAND_DISPLAY")
-            and "gnome" in os.getenv("XDG_CURRENT_DESKTOP", "").casefold()
-            and not self.capture_bound_click
-        ):
-            warnings.append(
-                "GNOME Wayland is active but Driver does not advertise "
-                "capture-bound clicks. Update Driver and install/enable the "
-                "bundled WinRects helper for full screenshot-grounded actions."
-            )
         return tuple(warnings)
+
+    def capability_limitations(self) -> tuple[str, ...]:
+        limitations: list[str] = []
+        if not self.has_tool("parse_visual_regions"):
+            limitations.append(
+                "Driver does not advertise parse_visual_regions; the agent "
+                "will use semantic accessibility/browser state first and may "
+                "use OpenRouter vision for screenshot interpretation."
+            )
+        if not self.capture_bound_click:
+            limitations.append(
+                "Driver does not advertise capture-bound raw pixel clicks. "
+                "Visual-only controls can be understood from screenshots, but "
+                "the agent will not execute unbound vision coordinates. "
+                "Semantic AX actions and typed browser refs remain enabled."
+            )
+        return tuple(limitations)
 
     def _materialize_inline_image(
         self,
