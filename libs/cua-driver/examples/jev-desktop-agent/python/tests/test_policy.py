@@ -16,6 +16,15 @@ class PolicyTest(unittest.TestCase):
             "confirm",
         )
 
+    def test_submit_search_is_not_consequential(self):
+        self.assertEqual(
+            classify_risk(
+                'Activate list item "Alan Turing — Search with Google".',
+                tool="click",
+            ),
+            "safe",
+        )
+
     def test_password_field_is_denied(self):
         self.assertTrue(field_is_sensitive("Account password"))
         self.assertEqual(
