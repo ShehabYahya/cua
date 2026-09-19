@@ -26,7 +26,7 @@ class InnerChooser:
 class HierarchyTest(unittest.TestCase):
     def test_large_pool_uses_group_then_leaf(self):
         candidates = [
-            Candidate(f"action-{index}", f"Action {index}", "click", {})
+            Candidate(f"action-{index}", f"Control {index}", "click", {})
             for index in range(40)
         ]
         candidates += [
@@ -38,7 +38,7 @@ class HierarchyTest(unittest.TestCase):
         chooser = HierarchicalChooser(inner, max_leaf_candidates=32, group_size=20)
         decision = asyncio.run(
             chooser.choose(
-                goal="choose action 23",
+                goal="perform the requested operation",
                 observation=Observation("s1", 7, 9, "Demo", "Demo", ()),
                 candidates=candidates,
                 history=[],
@@ -49,6 +49,65 @@ class HierarchyTest(unittest.TestCase):
         self.assertEqual(len(inner.calls), 2)
         self.assertIn("group-1", inner.calls[0])
         self.assertIn("action-23", inner.calls[1])
+
+
+    def test_relevant_shortlist_avoids_group_round_trip(self):
+        class ShortlistChooser:
+            def __init__(self):
+                self.calls = []
+
+            async def choose(self, *, candidates, **kwargs):
+                self.calls.append([candidate.id for candidate in candidates])
+                selected = next(
+                    candidate.id
+                    for candidate in candidates
+                    if candidate.id == "new-tab"
+                )
+                return Decision(selected, 0.92, {selected: 0.92})
+
+        candidates = [
+            Candidate(
+                f"noise-{index}",
+                f"Unrelated control {index}",
+                "click",
+                {},
+            )
+            for index in range(60)
+        ]
+        candidates.insert(
+            0,
+            Candidate(
+                "new-tab",
+                'Activate push button "New Tab".',
+                "click",
+                {},
+            ),
+        )
+        candidates += [
+            Candidate("done", "Done", None, {}),
+            Candidate("reobserve", "Reobserve", None, {}),
+            Candidate("abstain", "Abstain", None, {}),
+        ]
+        inner = ShortlistChooser()
+        chooser = HierarchicalChooser(
+            inner,
+            max_leaf_candidates=32,
+            group_size=20,
+        )
+        decision = asyncio.run(
+            chooser.choose(
+                goal="open a new tab",
+                observation=Observation(
+                    "s1", 7, 9, "Firefox", "Firefox", ()
+                ),
+                candidates=candidates,
+                history=[],
+            )
+        )
+        self.assertEqual(decision.selected_id, "new-tab")
+        self.assertEqual(len(inner.calls), 1)
+        self.assertLessEqual(len(inner.calls[0]), 32)
+        self.assertIn("new-tab", inner.calls[0])
 
 
 if __name__ == "__main__":
