@@ -439,28 +439,11 @@ class AgentLoop:
                         )
                         break
                     done_refuted_fingerprint = observation.fingerprint()
-                    if repairs < self._max_repairs:
-                        current = await self._planner.repair_step(
-                            original_goal=goal,
-                            current=current,
-                            observation=observation,
-                            history=history,
-                        )
-                        repairs += 1
-                        prepared = None
-                        continue
-                    result = RunResult(
-                        "uncertain",
-                        tuple(history),
-                        (
-                            "Jev reported done but the completion "
-                            "verifier could not confirm it."
-                        ),
-                        plan,
-                        completed_subgoals,
+                    self._progress(
+                        "Completion was refuted; keeping the same subgoal and "
+                        "asking Jev for an actual action instead of replanning."
                     )
-                    self._remember(goal, result)
-                    return result
+                    continue
 
                 if candidate.id == REOBSERVE:
                     self._progress("Jev requested a fresh observation.")
