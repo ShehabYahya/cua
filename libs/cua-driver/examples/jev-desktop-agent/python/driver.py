@@ -13,10 +13,15 @@ from contracts import Candidate, Element, Observation
 
 
 def driver_child_environment() -> dict[str, str]:
-    """Build the cua-driver child environment without enabling a screen reader."""
+    """Build the cua-driver child environment for the current desktop session."""
     env = os.environ.copy()
     if sys.platform.startswith("linux"):
+        # Do not advertise ScreenReaderEnabled: on GNOME that can launch Orca.
         env.setdefault("CUA_DRIVER_RS_A11Y_ADVERTISE_MODE", "is_enabled_only")
+        # Native-Wayland windows (including a native Firefox window) are otherwise
+        # invisible to the opt-in Wayland backend and the driver falls back to X11.
+        if env.get("WAYLAND_DISPLAY"):
+            env.setdefault("CUA_DRIVER_RS_ENABLE_WAYLAND", "1")
     return env
 
 
@@ -72,28 +77,38 @@ class CuaMcpDriver:
         listed = await self._call("list_windows", {})
         windows = list(listed.get("windows") or [])
         visible = [window for window in windows if window.get("is_on_screen", True)]
+
         if app:
             needle = app.casefold()
-            visible = [
+            matched = [
                 window
                 for window in visible
                 if needle
                 in f"{window.get('app_name', '')} {window.get('title', '')}".casefold()
             ]
-        if not visible:
-            if (
-                sys.platform.startswith("linux")
-                and not os.getenv("DISPLAY")
-                and not os.getenv("WAYLAND_DISPLAY")
-            ):
+            if not matched:
+                if (
+                    sys.platform.startswith("linux")
+                    and not os.getenv("DISPLAY")
+                    and not os.getenv("WAYLAND_DISPLAY")
+                ):
+                    raise RuntimeError(
+                        "no visible windows: this shell has neither DISPLAY nor "
+                        "WAYLAND_DISPLAY. Run the agent from a terminal inside the "
+                        "graphical desktop session."
+                    )
+                seen = [
+                    f"{window.get('app_name') or '?'} :: {window.get('title') or '?'}"
+                    for window in visible[:12]
+                ]
+                detail = "; ".join(seen) if seen else "<none>"
                 raise RuntimeError(
-                    "no visible windows: this shell has neither DISPLAY nor "
-                    "WAYLAND_DISPLAY. Run the agent from a terminal inside the "
-                    "graphical desktop session (or restore that session's display "
-                    "environment) before controlling desktop apps."
+                    f"no visible window matched {app!r}; Driver reported: {detail}"
                 )
-            message = f"no visible window matched {app!r}" if app else "no visible windows"
-            raise RuntimeError(message)
+            visible = matched
+
+        if not visible:
+            raise RuntimeError("Cua Driver reported no visible windows")
 
         def area(window: dict[str, Any]) -> float:
             bounds = window.get("bounds") or {}
