@@ -293,7 +293,11 @@ ConfirmationCallback = Callable[[Candidate], Awaitable[bool]]
 class DesktopDriver(Protocol):
     capture_bound_click: bool
 
-    async def desktop_overview(self) -> DesktopOverview: ...
+    async def desktop_overview(
+        self,
+        *,
+        include_screenshot: bool = True,
+    ) -> DesktopOverview: ...
 
     async def has_window(self, app: str) -> bool: ...
 
