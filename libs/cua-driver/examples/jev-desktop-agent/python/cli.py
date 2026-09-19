@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 from contracts import Candidate
@@ -133,11 +134,20 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--max-candidates", type=int, default=96)
     result.add_argument("--min-confidence", type=float, default=0.55)
     result.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress live progress messages",
+    )
+    result.add_argument(
         "--json",
         action="store_true",
         help="print full JSON result",
     )
     return result
+
+
+def _progress_printer(message: str) -> None:
+    print(f"[agent] {message}", file=sys.stderr, flush=True)
 
 
 async def _terminal_confirm(candidate: Candidate) -> bool:
@@ -248,6 +258,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     else None
                 )
             ),
+            progress=None if args.quiet else _progress_printer,
         )
         try:
             if args.voice:
