@@ -2,41 +2,133 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import uuid
 from contextlib import AsyncExitStack
+from dataclasses import replace
+from pathlib import Path
 from typing import Any, Mapping
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from contracts import Candidate, Element, Observation
+from contracts import (
+    Candidate,
+    DesktopOverview,
+    DriverRefusal,
+    Element,
+    Observation,
+    Rect,
+    VisualRegion,
+    thaw,
+)
 
 
 def driver_child_environment() -> dict[str, str]:
-    """Build the cua-driver child environment for the current desktop session."""
     env = os.environ.copy()
     if sys.platform.startswith("linux"):
-        # Do not advertise ScreenReaderEnabled: on GNOME that can launch Orca.
+        # On GNOME, claiming ScreenReaderEnabled can start Orca. IsEnabled is
+        # enough for the AT-SPI bridge without telling the desktop a screen
+        # reader is active.
         env.setdefault("CUA_DRIVER_RS_A11Y_ADVERTISE_MODE", "is_enabled_only")
-        # Native-Wayland windows (including a native Firefox window) are otherwise
-        # invisible to the opt-in Wayland backend and the driver falls back to X11.
         if env.get("WAYLAND_DISPLAY"):
             env.setdefault("CUA_DRIVER_RS_ENABLE_WAYLAND", "1")
     return env
 
 
-class CuaMcpDriver:
-    """Persistent Cua Driver MCP session for native desktop observations/actions."""
+def _rect(raw: Any) -> Rect | None:
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        x = float(raw.get("x", 0))
+        y = float(raw.get("y", 0))
+        width = float(raw.get("width", raw.get("w", 0)))
+        height = float(raw.get("height", raw.get("h", 0)))
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return Rect(x, y, width, height)
 
+
+def _screenshot_error(state: Mapping[str, Any]) -> str | None:
+    raw = state.get("screenshot_error")
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, Mapping):
+        code = raw.get("code")
+        message = raw.get("message") or raw.get("reason")
+        return (
+            ": ".join(str(value) for value in (code, message) if value)
+            or str(dict(raw))
+        )
+    return None
+
+
+def _visual_regions(
+    payload: Mapping[str, Any],
+    *,
+    capture_id: str,
+) -> tuple[VisualRegion, ...]:
+    if payload.get("schema") != "cua.visual_regions_v1":
+        return ()
+    capture = payload.get("capture")
+    if not isinstance(capture, Mapping) or capture.get("capture_id") != capture_id:
+        return ()
+    out: list[VisualRegion] = []
+    for index, raw in enumerate(payload.get("regions") or []):
+        if not isinstance(raw, Mapping):
+            continue
+        bounds = _rect(raw.get("bounds"))
+        if bounds is None:
+            continue
+        label = raw.get("label") or raw.get("text")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        try:
+            confidence = float(raw.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not 0.0 <= confidence <= 1.0:
+            continue
+        out.append(
+            VisualRegion(
+                id=str(raw.get("id") or f"local-{index + 1}"),
+                label=label.strip(),
+                kind=str(raw.get("kind") or "control"),
+                bounds=bounds,
+                confidence=confidence,
+                interactive=bool(raw.get("interactive", False)),
+                source="cua-perception",
+            )
+        )
+    return tuple(out)
+
+
+class CuaMcpDriver:
     def __init__(self, binary: str | None = None) -> None:
         self._binary = binary or os.getenv("CUA_DRIVER_BIN", "cua-driver")
         self._label = f"jev-desktop-{uuid.uuid4().hex[:8]}"
         self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
+        self._tool_schemas: dict[str, dict[str, Any]] = {}
+        self._temp_dir: str | None = None
+        self.capture_bound_click = False
 
     async def __aenter__(self) -> "CuaMcpDriver":
         self._stack = AsyncExitStack()
         await self._stack.__aenter__()
+        keep = os.getenv("JEV_DESKTOP_KEEP_ARTIFACTS", "").casefold() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if keep:
+            self._temp_dir = tempfile.mkdtemp(prefix="cua-jev-desktop-")
+        else:
+            temp = tempfile.TemporaryDirectory(prefix="cua-jev-desktop-")
+            self._temp_dir = temp.name
+            self._stack.callback(temp.cleanup)
         try:
             params = StdioServerParameters(
                 command=self._binary,
@@ -44,8 +136,19 @@ class CuaMcpDriver:
                 env=driver_child_environment(),
             )
             read, write = await self._stack.enter_async_context(stdio_client(params))
-            self._session = await self._stack.enter_async_context(ClientSession(read, write))
+            self._session = await self._stack.enter_async_context(
+                ClientSession(read, write)
+            )
             await self._session.initialize()
+            tools = (await self._session.list_tools()).tools
+            for tool in tools:
+                schema = getattr(tool, "inputSchema", None)
+                if not isinstance(schema, dict):
+                    schema = getattr(tool, "input_schema", None)
+                self._tool_schemas[str(tool.name)] = (
+                    schema if isinstance(schema, dict) else {}
+                )
+            self.capture_bound_click = self.has_property("click", "capture_id")
             return self
         except BaseException:
             await self._stack.aclose()
@@ -60,100 +163,356 @@ class CuaMcpDriver:
         if stack is not None:
             await stack.__aexit__(exc_type, exc, tb)
 
-    async def _call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def has_tool(self, name: str) -> bool:
+        return name in self._tool_schemas
+
+    def has_property(self, tool: str, prop: str) -> bool:
+        schema = self._tool_schemas.get(tool) or {}
+        properties = schema.get("properties")
+        return isinstance(properties, dict) and prop in properties
+
+    async def _call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
         if self._session is None:
-            raise RuntimeError("CuaMcpDriver must be used as an async context manager")
-        result = await self._session.call_tool(name, {**arguments, "session": self._label})
+            raise RuntimeError(
+                "CuaMcpDriver must be used as an async context manager"
+            )
+        result = await self._session.call_tool(
+            name,
+            {**arguments, "session": self._label},
+        )
+        data = result.structuredContent
+        if isinstance(data, dict) and (
+            data.get("status") == "refused" or data.get("refusal")
+        ):
+            refusal = data.get("refusal")
+            reason = str(
+                refusal.get("reason")
+                if isinstance(refusal, Mapping)
+                else refusal or data
+            )
+            escalation = data.get("escalation")
+            recommended = None
+            if isinstance(escalation, Mapping):
+                recommended = (
+                    escalation.get("target")
+                    or escalation.get("recommended")
+                )
+            raise DriverRefusal(
+                name,
+                reason,
+                recommended=str(recommended) if recommended else None,
+            )
         if result.isError:
             raise RuntimeError(f"{name} failed: {result.content}")
-        data = result.structuredContent
         if not isinstance(data, dict):
             raise RuntimeError(f"{name} returned no structured result")
-        if data.get("status") == "refused" or data.get("refusal"):
-            raise RuntimeError(f"{name} refused: {data.get('refusal', data)}")
         return data
 
-    async def observe(self, app: str | None = None) -> Observation:
-        listed = await self._call("list_windows", {})
-        windows = list(listed.get("windows") or [])
-        visible = [window for window in windows if window.get("is_on_screen", True)]
+    async def list_windows(self) -> list[dict[str, Any]]:
+        args: dict[str, Any] = {}
+        if self.has_property("list_windows", "on_screen_only"):
+            args["on_screen_only"] = True
+        data = await self._call("list_windows", args)
+        return list(data.get("windows") or [])
 
+    async def list_apps(self) -> list[dict[str, Any]]:
+        data = await self._call("list_apps", {})
+        return list(data.get("apps") or [])
+
+    @staticmethod
+    def _window_matches(window: Mapping[str, Any], app: str) -> bool:
+        needle = app.casefold().strip()
+        hay = (
+            f"{window.get('app_name', '')} {window.get('title', '')}"
+            .casefold()
+        )
+        return needle in hay
+
+    async def has_window(self, app: str) -> bool:
+        return any(
+            self._window_matches(window, app)
+            for window in await self.list_windows()
+        )
+
+    async def ensure_app(self, app: str) -> None:
+        if await self.has_window(app):
+            return
+        apps = await self.list_apps()
+        needle = app.casefold().strip()
+        ranked = sorted(
+            apps,
+            key=lambda item: (
+                str(item.get("name") or "").casefold() == needle,
+                needle in str(item.get("name") or "").casefold(),
+                bool(item.get("running")),
+            ),
+            reverse=True,
+        )
+        match = next(
+            (
+                item
+                for item in ranked
+                if needle
+                in f"{item.get('name', '')} {item.get('bundle_id', '')}".casefold()
+            ),
+            None,
+        )
+        if match is None:
+            await self._call("launch_app", {"name": app})
+        else:
+            launch_path = match.get("launch_path")
+            args = (
+                {"launch_path": launch_path}
+                if isinstance(launch_path, str) and launch_path
+                else {"name": str(match.get("name") or app)}
+            )
+            await self._call("launch_app", args)
+        for _ in range(32):
+            if await self.has_window(app):
+                return
+            import asyncio
+
+            await asyncio.sleep(0.25)
+        raise RuntimeError(
+            f"launched {app!r}, but no matching window became visible"
+        )
+
+    async def desktop_overview(self) -> DesktopOverview:
+        windows = tuple(await self.list_windows())
+        apps = tuple(await self.list_apps())
+        screenshot_path = None
+        if (
+            self.has_tool("get_desktop_state")
+            and self._temp_dir
+            and self.has_property("get_desktop_state", "screenshot_out_file")
+        ):
+            proposed = str(Path(self._temp_dir) / "desktop.png")
+            try:
+                state = await self._call(
+                    "get_desktop_state",
+                    {"screenshot_out_file": proposed},
+                )
+                candidate = state.get("screenshot_file_path") or proposed
+                if isinstance(candidate, str) and Path(candidate).is_file():
+                    screenshot_path = candidate
+            except Exception:
+                screenshot_path = None
+        return DesktopOverview(
+            windows=windows,
+            apps=apps,
+            screenshot_path=screenshot_path,
+        )
+
+    def _choose_window(
+        self,
+        windows: list[dict[str, Any]],
+        app: str | None,
+    ) -> dict[str, Any]:
+        visible = [
+            window
+            for window in windows
+            if window.get("is_on_screen", True)
+        ]
         if app:
-            needle = app.casefold()
             matched = [
                 window
                 for window in visible
-                if needle
-                in f"{window.get('app_name', '')} {window.get('title', '')}".casefold()
+                if self._window_matches(window, app)
             ]
             if not matched:
-                if (
-                    sys.platform.startswith("linux")
-                    and not os.getenv("DISPLAY")
-                    and not os.getenv("WAYLAND_DISPLAY")
-                ):
-                    raise RuntimeError(
-                        "no visible windows: this shell has neither DISPLAY nor "
-                        "WAYLAND_DISPLAY. Run the agent from a terminal inside the "
-                        "graphical desktop session."
-                    )
                 seen = [
-                    f"{window.get('app_name') or '?'} :: {window.get('title') or '?'}"
+                    f"{window.get('app_name') or '?'} :: "
+                    f"{window.get('title') or '?'}"
                     for window in visible[:12]
                 ]
-                detail = "; ".join(seen) if seen else "<none>"
                 raise RuntimeError(
-                    f"no visible window matched {app!r}; Driver reported: {detail}"
+                    f"no visible window matched {app!r}; Driver reported: "
+                    + ("; ".join(seen) if seen else "<none>")
                 )
             visible = matched
-
         if not visible:
             raise RuntimeError("Cua Driver reported no visible windows")
+        with_z = [
+            window
+            for window in visible
+            if isinstance(window.get("z_index"), int)
+        ]
+        if with_z:
+            return max(with_z, key=lambda window: int(window["z_index"]))
 
-        def area(window: dict[str, Any]) -> float:
+        def area(window: Mapping[str, Any]) -> float:
             bounds = window.get("bounds") or {}
-            return float(bounds.get("width", 0)) * float(bounds.get("height", 0))
+            return (
+                float(bounds.get("width", 0))
+                * float(bounds.get("height", 0))
+            )
 
-        window = max(visible, key=area)
+        return max(visible, key=area)
+
+    async def observe(self, app: str | None = None) -> Observation:
+        window = self._choose_window(await self.list_windows(), app)
         pid = int(window["pid"])
         window_id = int(window["window_id"])
-        state = await self._call(
-            "get_window_state",
-            {
-                "pid": pid,
-                "window_id": window_id,
-                "include_screenshot": False,
-                "max_elements": 1500,
-            },
-        )
-        raw_elements = state.get("elements") or []
-        elements = tuple(
-            Element(
-                index=int(raw.get("element_index", position)),
-                token=(
-                    raw.get("element_token")
-                    if isinstance(raw.get("element_token"), str)
-                    else None
-                ),
-                role=str(raw.get("role") or "Unknown"),
-                label=str(raw.get("label") or ""),
-                enabled=bool(raw.get("enabled", True)),
-                value=str(raw["value"]) if raw.get("value") is not None else None,
+        args: dict[str, Any] = {
+            "pid": pid,
+            "window_id": window_id,
+            "include_accessibility_tree": True,
+            "include_screenshot": True,
+            "max_elements": 2500,
+            "max_dimension": 1800,
+        }
+        proposed = None
+        if (
+            self._temp_dir
+            and self.has_property(
+                "get_window_state",
+                "screenshot_out_file",
             )
-            for position, raw in enumerate(raw_elements)
+        ):
+            proposed = str(
+                Path(self._temp_dir)
+                / f"window-{pid}-{window_id}-{uuid.uuid4().hex[:8]}.png"
+            )
+            args["screenshot_out_file"] = proposed
+        schema_props = (
+            (self._tool_schemas.get("get_window_state") or {})
+            .get("properties")
         )
+        if isinstance(schema_props, dict):
+            args = {
+                key: value
+                for key, value in args.items()
+                if key in schema_props
+            }
+            args.setdefault("pid", pid)
+            args.setdefault("window_id", window_id)
+        state = await self._call("get_window_state", args)
+        raw_elements = state.get("elements") or []
+        elements: list[Element] = []
+        for position, raw in enumerate(raw_elements):
+            if not isinstance(raw, Mapping):
+                continue
+            actions_raw = raw.get("actions") or []
+            actions = tuple(
+                str(value)
+                for value in actions_raw
+                if isinstance(value, str)
+            )
+            elements.append(
+                Element(
+                    index=int(raw.get("element_index", position)),
+                    token=(
+                        raw.get("element_token")
+                        if isinstance(raw.get("element_token"), str)
+                        else None
+                    ),
+                    role=str(raw.get("role") or "Unknown"),
+                    label=str(raw.get("label") or ""),
+                    enabled=bool(raw.get("enabled", True)),
+                    value=(
+                        str(raw["value"])
+                        if raw.get("value") is not None
+                        else None
+                    ),
+                    selected=(
+                        raw.get("selected")
+                        if isinstance(raw.get("selected"), bool)
+                        else None
+                    ),
+                    actions=actions,
+                    bounds=_rect(raw.get("frame")),
+                )
+            )
+        screenshot_path = state.get("screenshot_file_path")
+        if (
+            not isinstance(screenshot_path, str)
+            or not Path(screenshot_path).is_file()
+        ):
+            screenshot_path = (
+                proposed
+                if proposed and Path(proposed).is_file()
+                else None
+            )
+        capture_id = (
+            state.get("capture_id")
+            if isinstance(state.get("capture_id"), str)
+            else None
+        )
+        visual_regions: tuple[VisualRegion, ...] = ()
+        if (
+            capture_id
+            and self.capture_bound_click
+            and self.has_tool("parse_visual_regions")
+        ):
+            try:
+                parsed = await self._call(
+                    "parse_visual_regions",
+                    {
+                        "capture_id": capture_id,
+                        "options": {
+                            "kinds": ["text", "icon"],
+                            "min_confidence": 0.55,
+                            "max_regions": 100,
+                        },
+                    },
+                )
+                visual_regions = _visual_regions(
+                    parsed,
+                    capture_id=capture_id,
+                )
+            except Exception:
+                visual_regions = ()
         return Observation(
             snapshot_id=str(state.get("snapshot_id") or "unknown"),
             pid=pid,
             window_id=window_id,
-            app=str(state.get("app_name") or window.get("app_name") or "unknown"),
-            window_title=str(state.get("window_title") or window.get("title") or ""),
-            elements=elements,
+            app=str(
+                state.get("app_name")
+                or window.get("app_name")
+                or "unknown"
+            ),
+            window_title=str(
+                state.get("window_title")
+                or window.get("title")
+                or ""
+            ),
+            elements=tuple(elements),
+            visual_regions=visual_regions,
+            capture_id=capture_id,
+            screenshot_path=screenshot_path,
+            screenshot_width=(
+                int(state["screenshot_width"])
+                if isinstance(state.get("screenshot_width"), int)
+                else None
+            ),
+            screenshot_height=(
+                int(state["screenshot_height"])
+                if isinstance(state.get("screenshot_height"), int)
+                else None
+            ),
+            screenshot_error=_screenshot_error(state),
             degraded=bool(state.get("degraded", False)),
             truncated=bool(state.get("truncated", False)),
         )
 
-    async def execute(self, candidate: Candidate) -> Mapping[str, Any]:
+    async def execute(
+        self,
+        candidate: Candidate,
+    ) -> Mapping[str, Any]:
         if candidate.tool is None:
             raise ValueError("terminal candidates are not executable")
-        return await self._call(candidate.tool, dict(candidate.arguments))
+        return await self._call(
+            candidate.tool,
+            thaw(candidate.arguments),
+        )
+
+    def with_foreground(self, candidate: Candidate) -> Candidate:
+        if candidate.tool is None:
+            return candidate
+        arguments = thaw(candidate.arguments)
+        arguments["delivery_mode"] = "foreground"
+        return replace(candidate, arguments=arguments)
