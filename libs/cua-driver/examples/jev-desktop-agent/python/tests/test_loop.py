@@ -97,6 +97,27 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(driver.executed, ["click-1"])
         self.assertEqual(result.completed_subgoals, 1)
 
+    def test_cancelled_before_execution_never_observes_or_executes(self):
+        driver = FakeDriver()
+        agent = AgentLoop(
+            driver,
+            FakeChooser(),
+            planner=FakePlanner(),
+            verifier=FakeVerifier(),
+        )
+        cancel = asyncio.Event()
+        cancel.set()
+        result = asyncio.run(
+            agent.run(
+                "open new tab",
+                act=True,
+                cancel_event=cancel,
+            )
+        )
+        self.assertEqual(result.status, "cancelled")
+        self.assertEqual(driver.counter, 0)
+        self.assertEqual(driver.executed, [])
+
     def test_dry_run_never_executes(self):
         driver = FakeDriver()
         agent = AgentLoop(
