@@ -1,0 +1,15 @@
+[project]
+name = "cua-driver-jev-desktop-agent-example"
+version = "0.1.0"
+description = "Experimental general desktop loop with Cua Driver and TypeSafe Jev"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=1.26.0,<2",
+  "typesafe-sdk>=0.6.0,<1",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = []
