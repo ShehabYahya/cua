@@ -21,8 +21,8 @@ def assess_decision(
     candidates: list[Candidate],
     *,
     min_confidence: float,
-    probability_floor: float = 0.30,
-    min_margin: float = 0.12,
+    probability_floor: float = 0.45,
+    min_margin: float = 0.15,
 ) -> DecisionAssessment:
     """Assess a Jev choice without treating one absolute score as universal.
 
