@@ -56,16 +56,20 @@ def _normalized(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", text.casefold()))
 
 
+def _has_phrase(normalized: str, phrase: str) -> bool:
+    return f" {phrase} " in f" {normalized} "
+
+
 def field_is_sensitive(label: str) -> bool:
     normalized = _normalized(label)
-    return any(word in normalized for word in DENY_FIELD_WORDS)
+    return any(_has_phrase(normalized, word) for word in DENY_FIELD_WORDS)
 
 
 def classify_risk(description: str, *, tool: str | None, field_label: str = "") -> str:
     if tool == "type_text" and field_is_sensitive(field_label):
         return "deny"
     normalized = _normalized(description)
-    if any(word in normalized for word in CONFIRM_WORDS):
+    if any(_has_phrase(normalized, word) for word in CONFIRM_WORDS):
         return "confirm"
     return "safe"
 
