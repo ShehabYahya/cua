@@ -17,13 +17,20 @@ from contracts import (
     Plan,
     PlanStep,
     StepRecord,
+    Verification,
     validate_decision,
 )
 from perception import NoopPerceiver
 from planner import PassThroughPlanner
 from policy import classify_risk, sensitive_text_intent
 from resources import DownloadTracker
-from verifier import ConservativeVerifier, GoalVerifier, state_changed
+from verifier import (
+    ConservativeVerifier,
+    GoalVerifier,
+    OpenRouterVerifier,
+    local_verification,
+    state_changed,
+)
 from writer import (
     OpenRouterWriter,
     PreparedText,
@@ -57,6 +64,7 @@ class AgentLoop:
         max_repairs_per_subgoal: int = 2,
         download_root: str | None = None,
         progress: Callable[[str], None] | None = None,
+        verify_every_action: bool = False,
     ) -> None:
         self._driver = driver
         self._chooser = chooser
@@ -73,6 +81,7 @@ class AgentLoop:
         self._recent_files: tuple[str, ...] = ()
         self._recent_context: list[str] = []
         self._progress_callback = progress
+        self._verify_every_action = verify_every_action
 
     def _progress(self, message: str) -> None:
         if self._progress_callback is None:
@@ -186,13 +195,20 @@ class AgentLoop:
             f"Desktop ready: {len(desktop.windows)} visible window(s), "
             f"{len(desktop.apps)} known app(s)."
         )
-        self._progress("Planning task...")
+        direct_mode = isinstance(self._planner, PassThroughPlanner)
+        if direct_mode:
+            self._progress("Direct mode: one goal, no planner model call.")
+        else:
+            self._progress("Planning task...")
         plan = await self._planner.plan(
             goal,
             desktop=desktop,
             recent_context=self.recent_context,
         )
-        self._progress(f"Plan ready: {len(plan.steps)} subgoal(s).")
+        if direct_mode:
+            self._progress("Direct goal ready.")
+        else:
+            self._progress(f"Plan ready: {len(plan.steps)} subgoal(s).")
         history: list[StepRecord] = []
         global_step = 0
         completed_subgoals = 0
@@ -202,9 +218,12 @@ class AgentLoop:
             start=1,
         ):
             current = planned_step
-            self._progress(
-                f"Subgoal {subgoal_index}/{len(plan.steps)}: {current.goal}"
-            )
+            if direct_mode:
+                self._progress(f"Goal: {current.goal}")
+            else:
+                self._progress(
+                    f"Subgoal {subgoal_index}/{len(plan.steps)}: {current.goal}"
+                )
             repairs = 0
             no_progress = 0
             reobserve_count = 0
@@ -511,7 +530,7 @@ class AgentLoop:
 
                 if candidate.risk == "safe":
                     contextual_risk = classify_risk(
-                        f"{current.goal} {candidate.description}",
+                        candidate.description,
                         tool=candidate.tool,
                     )
                     if (
@@ -619,6 +638,26 @@ class AgentLoop:
                         executed_candidate
                     )
                 except DriverRefusal as refusal:
+                    if refusal.code == "session_ended":
+                        history.append(
+                            StepRecord(
+                                global_step,
+                                subgoal_index,
+                                observation.snapshot_id,
+                                candidate.id,
+                                candidate.description,
+                                decision.confidence,
+                                False,
+                                "session_revived",
+                                reason=refusal.reason,
+                            )
+                        )
+                        self._progress(
+                            "Driver lifecycle session ended; reviving it and "
+                            "re-observing before retrying."
+                        )
+                        await self._driver.revive_session()
+                        continue
                     if (
                         refusal.recommended == "foreground"
                         and allow_foreground
@@ -766,18 +805,52 @@ class AgentLoop:
                 self._progress(
                     "State changed." if changed else "No semantic state change detected."
                 )
-                self._progress("Verifying subgoal completion...")
-                verification = await self._verification(
-                    original_goal=goal,
-                    step=current,
-                    observation=after,
-                    history=history,
+                verification = Verification(
+                    False,
+                    0.0,
+                    "verification deferred until Jev signals done",
                 )
-                self._progress(
-                    f"Verifier: {'done' if verification.done else 'not done'} "
-                    f"({verification.confidence:.0%})"
-                    + (f" — {verification.reason}" if verification.reason else "")
-                )
+                if self._verify_every_action:
+                    self._progress("Verifying completion...")
+                    verification = await self._verification(
+                        original_goal=goal,
+                        step=current,
+                        observation=after,
+                        history=history,
+                    )
+                elif not direct_mode and isinstance(
+                    self._verifier,
+                    OpenRouterVerifier,
+                ):
+                    local = local_verification(
+                        original_goal=goal,
+                        step=current,
+                        observation=after,
+                    )
+                    if local is not None:
+                        verification = local
+                elif not isinstance(self._verifier, OpenRouterVerifier):
+                    verification = await self._verification(
+                        original_goal=goal,
+                        step=current,
+                        observation=after,
+                        history=history,
+                    )
+
+                if verification.confidence > 0.0 or verification.done:
+                    self._progress(
+                        f"Verifier: {'done' if verification.done else 'not done'} "
+                        f"({verification.confidence:.0%})"
+                        + (
+                            f" — {verification.reason}"
+                            if verification.reason
+                            else ""
+                        )
+                    )
+                else:
+                    self._progress(
+                        "Skipping remote verifier for this intermediate action."
+                    )
                 if verification.done:
                     completed_subgoals += 1
                     self._progress(
@@ -847,11 +920,17 @@ class AgentLoop:
                 self._remember(goal, result)
                 return result
 
-        self._progress("All planned subgoals completed.")
+        self._progress(
+            "Goal completed." if direct_mode else "All planned subgoals completed."
+        )
         result = RunResult(
             "completed",
             tuple(history),
-            "All planned subgoals were independently verified.",
+            (
+                "Goal independently verified."
+                if direct_mode
+                else "All planned subgoals were independently verified."
+            ),
             plan,
             completed_subgoals,
         )
