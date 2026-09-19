@@ -19,7 +19,7 @@ from contracts import (
 )
 from perception import NoopPerceiver
 from planner import PassThroughPlanner
-from policy import classify_risk
+from policy import classify_risk, field_is_sensitive
 from resources import DownloadTracker
 from verifier import ConservativeVerifier, GoalVerifier, state_changed
 from writer import (
@@ -401,7 +401,12 @@ class AgentLoop:
                         f"{current.goal} {candidate.description}",
                         tool=candidate.tool,
                     )
-                    if contextual_risk == "confirm":
+                    if (
+                        candidate.tool in {"type_text", "browser_type"}
+                        and field_is_sensitive(current.goal)
+                    ):
+                        candidate = replace(candidate, risk="deny")
+                    elif contextual_risk == "confirm":
                         candidate = replace(candidate, risk="confirm")
 
                 if candidate.risk == "deny":
