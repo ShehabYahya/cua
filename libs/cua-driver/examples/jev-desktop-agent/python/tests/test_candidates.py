@@ -205,6 +205,45 @@ class CandidateTest(unittest.TestCase):
         self.assertEqual(candidate.arguments["ref"], "p1:1")
         self.assertEqual(candidate.arguments["destination_ref"], "p1:2")
 
+    def test_browser_upload_uses_recent_file_without_exposing_full_path(self):
+        observation = Observation(
+            "s1",
+            7,
+            9,
+            "Chrome",
+            "Compose",
+            (
+                Element(
+                    100001,
+                    None,
+                    "button",
+                    "Attach file",
+                    actions=("upload",),
+                    source="browser",
+                    browser_ref="p1:12",
+                ),
+            ),
+            browser_target_id="bt-1",
+            browser_tab_id="tab-1",
+        )
+        candidate = next(
+            item
+            for item in build_candidates(
+                "attach the PDF",
+                observation,
+                recent_files=("/home/test/Downloads/report.pdf",),
+            )
+            if item.id.startswith("browser-upload-")
+        )
+        self.assertEqual(candidate.tool, "browser_set_input_files")
+        self.assertEqual(
+            candidate.arguments["files"],
+            ("/home/test/Downloads/report.pdf",),
+        )
+        self.assertIn("report.pdf", candidate.description)
+        self.assertNotIn("/home/test/Downloads", candidate.description)
+        self.assertEqual(candidate.risk, "confirm")
+
     def test_password_field_is_never_offered_for_typing(self):
         observation = Observation(
             "s1", 7, 9, "App", "Login",
