@@ -76,10 +76,12 @@ def _score(
     label: str,
     role: str,
     index: int,
-) -> tuple[int, int, int]:
+    source: str,
+) -> tuple[int, int, int, int]:
     overlap = len(goal_words & _words(label))
+    source_bonus = 2 if source == "browser" else 0
     role_bonus = 1 if _role_key(role) in CLICK_ROLES | TEXT_ROLES else 0
-    return overlap, role_bonus, -index
+    return overlap, source_bonus, role_bonus, -index
 
 
 def _window_target(observation: Observation) -> dict[str, object]:
@@ -290,6 +292,7 @@ def build_candidates(
             element.label,
             element.role,
             element.index,
+            element.source,
         ),
         reverse=True,
     )
@@ -300,6 +303,68 @@ def build_candidates(
     for element in elements:
         if len(candidates) >= action_limit:
             break
+
+        if (
+            element.source == "browser"
+            and element.browser_ref
+            and observation.browser_target_id
+            and observation.browser_tab_id
+        ):
+            browser_common = {
+                "target_id": observation.browser_target_id,
+                "tab_id": observation.browser_tab_id,
+                "ref": element.browser_ref,
+            }
+            if "click" in element.actions:
+                candidates.append(
+                    apply_risk(
+                        Candidate(
+                            id=f"browser-click-{element.index}",
+                            description=(
+                                f'Activate page {element.role} "{element.label}".'
+                            ),
+                            tool="browser_click",
+                            arguments={
+                                **browser_common,
+                                "input_route": "dom_event",
+                            },
+                            snapshot_id=observation.snapshot_id,
+                            source="browser",
+                        )
+                    )
+                )
+            if (
+                "type" in element.actions
+                and prepared_texts
+                and not field_is_sensitive(element.label)
+            ):
+                for slot in prepared_texts[:2]:
+                    if len(candidates) >= action_limit:
+                        break
+                    candidates.append(
+                        apply_risk(
+                            Candidate(
+                                id=(
+                                    f"browser-type-{element.index}-{slot.id}"
+                                ),
+                                description=(
+                                    f"Put prepared text {slot.id} into page "
+                                    f'{element.role} "{element.label}".'
+                                ),
+                                tool="browser_type",
+                                arguments={
+                                    **browser_common,
+                                    "text": slot.text,
+                                    "replace": True,
+                                },
+                                snapshot_id=observation.snapshot_id,
+                                source="browser",
+                            ),
+                            field_label=element.label,
+                        )
+                    )
+            continue
+
         if _is_clickable(element):
             candidates.append(
                 apply_risk(
@@ -366,6 +431,28 @@ def build_candidates(
             candidate = _visual_candidate(observation, region)
             if candidate is not None:
                 candidates.append(candidate)
+
+    urls = re.findall(r"https?://[^\s'\"<>]+", goal)
+    if (
+        urls
+        and observation.browser_target_id
+        and observation.browser_tab_id
+        and len(candidates) < action_limit
+    ):
+        candidates.append(
+            Candidate(
+                "browser-navigate",
+                f"Navigate the current browser tab to {urls[0]}.",
+                "browser_navigate",
+                {
+                    "target_id": observation.browser_target_id,
+                    "tab_id": observation.browser_tab_id,
+                    "url": urls[0],
+                },
+                snapshot_id=observation.snapshot_id,
+                source="browser",
+            )
+        )
 
     candidates.extend(
         [
