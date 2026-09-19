@@ -93,6 +93,43 @@ class CandidateTest(unittest.TestCase):
         self.assertEqual(candidate.arguments["ref"], "p1:7")
         self.assertEqual(candidate.arguments["input_route"], "dom_event")
 
+    def test_browser_download_uses_approved_root_and_confirmation(self):
+        observation = Observation(
+            "s1",
+            7,
+            9,
+            "Chrome",
+            "Report",
+            (
+                Element(
+                    100001,
+                    None,
+                    "link",
+                    "Download PDF",
+                    actions=("click",),
+                    source="browser",
+                    browser_ref="p1:4",
+                ),
+            ),
+            browser_target_id="bt-1",
+            browser_tab_id="tab-1",
+        )
+        candidate = next(
+            item
+            for item in build_candidates(
+                "download the PDF",
+                observation,
+                download_root="/home/test/Downloads",
+            )
+            if item.id.startswith("browser-download-")
+        )
+        self.assertEqual(candidate.tool, "browser_download")
+        self.assertEqual(
+            candidate.arguments["destination_root"],
+            "/home/test/Downloads",
+        )
+        self.assertEqual(candidate.risk, "confirm")
+
     def test_browser_pointer_right_click_uses_typed_route(self):
         observation = Observation(
             "s1",
