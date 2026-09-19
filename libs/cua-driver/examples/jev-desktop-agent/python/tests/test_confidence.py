@@ -60,6 +60,49 @@ class ConfidenceTest(unittest.TestCase):
         )
         self.assertFalse(assessment.accepted)
 
+    def test_safe_search_action_can_pass_with_clear_low_score_margin(self):
+        decision = Decision(
+            "a",
+            0.37,
+            {
+                "a": 0.40,
+                "b": 0.25,
+                "done": 0.12,
+                "reobserve": 0.11,
+                "abstain": 0.12,
+            },
+        )
+        assessment = assess_decision(
+            decision,
+            self.candidates(),
+            min_confidence=0.55,
+        )
+        self.assertTrue(assessment.accepted)
+        self.assertEqual(assessment.reason, "clear categorical winner")
+
+    def test_consequential_action_needs_stronger_distribution(self):
+        candidates = [
+            Candidate(
+                "send",
+                'Activate button "Send".',
+                "click",
+                {},
+                risk="confirm",
+            ),
+            Candidate("wait", "Wait", None, {}),
+        ]
+        decision = Decision(
+            "send",
+            0.40,
+            {"send": 0.52, "wait": 0.30},
+        )
+        assessment = assess_decision(
+            decision,
+            candidates,
+            min_confidence=0.55,
+        )
+        self.assertFalse(assessment.accepted)
+
     def test_terminal_choice_is_safe_to_verify_at_low_confidence(self):
         decision = Decision(
             "done",
