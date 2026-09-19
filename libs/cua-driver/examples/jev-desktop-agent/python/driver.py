@@ -150,6 +150,8 @@ class CuaMcpDriver:
                     schema if isinstance(schema, dict) else {}
                 )
             self.capture_bound_click = self.has_property("click", "capture_id")
+            if self.has_tool("start_session"):
+                await self._call("start_session", {})
             return self
         except BaseException:
             await self._stack.aclose()
@@ -159,10 +161,20 @@ class CuaMcpDriver:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         stack = self._stack
+        if self._session is not None and self.has_tool("end_session"):
+            try:
+                await self._call("end_session", {})
+            except Exception:
+                pass
         self._stack = None
         self._session = None
         if stack is not None:
             await stack.__aexit__(exc_type, exc, tb)
+
+    async def revive_session(self) -> None:
+        if not self.has_tool("start_session"):
+            raise RuntimeError("Cua Driver does not advertise start_session")
+        await self._call("start_session", {})
 
     def has_tool(self, name: str) -> bool:
         return name in self._tool_schemas
@@ -222,6 +234,7 @@ class CuaMcpDriver:
                 raise DriverRefusal(
                     name,
                     str(reason_value),
+                    code=str(code) if isinstance(code, str) else None,
                     recommended=(
                         str(recommended)
                         if recommended
