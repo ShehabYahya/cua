@@ -25,9 +25,14 @@ def _criteria(candidates: list[Candidate]) -> dict[str, str]:
 def _history(history: list[StepRecord]) -> list[dict[str, Any]]:
     return [
         {
+            "subgoal": item.subgoal,
             "selected_id": item.selected_id,
+            "description": item.description,
+            "confidence": round(item.confidence, 4),
             "executed": item.executed,
             "outcome": item.outcome,
+            "effect": item.effect,
+            "reason": item.reason,
         }
         for item in history[-8:]
     ]
