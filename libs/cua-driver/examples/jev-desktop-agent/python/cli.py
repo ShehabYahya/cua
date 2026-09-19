@@ -162,10 +162,12 @@ async def main_async(args: argparse.Namespace) -> int:
     if args.check:
         async with CuaMcpDriver() as driver:
             warnings = await driver.health_warnings()
+            limitations = driver.capability_limitations()
             overview = await driver.desktop_overview()
             payload = {
                 "status": "ok" if not warnings else "degraded",
                 "warnings": list(warnings),
+                "limitations": list(limitations),
                 "capabilities": driver.capability_summary(),
                 "visible_windows": len(overview.windows),
                 "known_apps": len(overview.apps),
