@@ -683,7 +683,12 @@ class CuaMcpDriver:
             title,
         )
 
-    async def observe(self, app: str | None = None) -> Observation:
+    async def observe(
+        self,
+        app: str | None = None,
+        *,
+        include_screenshot: bool = True,
+    ) -> Observation:
         window = self._choose_window(await self.list_windows(), app)
         pid = int(window["pid"])
         window_id = int(window["window_id"])
@@ -691,13 +696,16 @@ class CuaMcpDriver:
             "pid": pid,
             "window_id": window_id,
             "include_accessibility_tree": True,
-            "include_screenshot": True,
+            "include_screenshot": include_screenshot,
             "max_elements": 2500,
-            "max_dimension": 1800,
+        }
+        if include_screenshot:
+            args["max_dimension"] = 1800
         }
         proposed = None
         if (
-            self._temp_dir
+            include_screenshot
+            and self._temp_dir
             and self.has_property(
                 "get_window_state",
                 "screenshot_out_file",
@@ -791,11 +799,13 @@ class CuaMcpDriver:
                 if proposed and Path(proposed).is_file()
                 else None
             )
-        if screenshot_path is None:
+        if include_screenshot and screenshot_path is None:
             screenshot_path = self._materialize_inline_image(
                 state,
                 stem=f"window-{pid}-{window_id}",
             )
+        if not include_screenshot:
+            screenshot_path = None
         capture_id = (
             state.get("capture_id")
             if isinstance(state.get("capture_id"), str)
