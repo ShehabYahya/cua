@@ -7,7 +7,7 @@ import os
 
 from contracts import Candidate
 from driver import CuaMcpDriver
-from jev_adapter import chooser_from_env
+from jev_adapter import HierarchicalChooser, chooser_from_env
 from loop import AgentLoop, RunResult
 from openrouter_client import (
     DEFAULT_REASONING_MODEL,
@@ -116,7 +116,7 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument("--max-steps", type=int, default=30)
-    result.add_argument("--max-candidates", type=int, default=32)
+    result.add_argument("--max-candidates", type=int, default=96)
     result.add_argument("--min-confidence", type=float, default=0.55)
     result.add_argument(
         "--json",
@@ -148,7 +148,11 @@ async def main_async(args: argparse.Namespace) -> int:
     if not args.voice and not args.goal:
         raise SystemExit("provide a goal or use --voice")
     try:
-        chooser = chooser_from_env(args.provider)
+        chooser = HierarchicalChooser(
+            chooser_from_env(args.provider),
+            max_leaf_candidates=32,
+            group_size=20,
+        )
     except ValueError as error:
         raise SystemExit(str(error)) from None
 
@@ -268,9 +272,9 @@ def main() -> int:
     args = parser().parse_args()
     if args.max_steps < 1:
         raise SystemExit("--max-steps must be at least 1")
-    if not 4 <= args.max_candidates <= 32:
+    if not 4 <= args.max_candidates <= 192:
         raise SystemExit(
-            "--max-candidates must be between 4 and 32"
+            "--max-candidates must be between 4 and 192"
         )
     if not 0.0 <= args.min_confidence <= 1.0:
         raise SystemExit(
