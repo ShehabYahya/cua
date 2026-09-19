@@ -845,7 +845,14 @@ class AgentLoop:
                     0.0,
                     "verification deferred until Jev signals done",
                 )
-                if self._verify_every_action:
+                local = local_verification(
+                    original_goal=goal,
+                    step=current,
+                    observation=after,
+                )
+                if local is not None:
+                    verification = local
+                elif self._verify_every_action:
                     self._progress("Verifying completion...")
                     verification = await self._verification(
                         original_goal=goal,
@@ -853,17 +860,6 @@ class AgentLoop:
                         observation=after,
                         history=history,
                     )
-                elif not direct_mode and isinstance(
-                    self._verifier,
-                    OpenRouterVerifier,
-                ):
-                    local = local_verification(
-                        original_goal=goal,
-                        step=current,
-                        observation=after,
-                    )
-                    if local is not None:
-                        verification = local
                 elif not isinstance(self._verifier, OpenRouterVerifier):
                     verification = await self._verification(
                         original_goal=goal,
