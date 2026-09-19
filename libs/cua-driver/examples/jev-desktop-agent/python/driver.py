@@ -233,6 +233,54 @@ class CuaMcpDriver:
             raise RuntimeError(f"{name} returned no structured result")
         return data
 
+    async def health_warnings(self) -> tuple[str, ...]:
+        warnings: list[str] = []
+        if not self.has_tool("health_report"):
+            warnings.append(
+                "This Cua Driver does not advertise health_report; "
+                "upgrade to the latest Driver before relying on full "
+                "visual/Wayland behavior."
+            )
+        else:
+            try:
+                report = await self._call("health_report", {})
+                overall = report.get("overall")
+                if isinstance(overall, str) and overall != "ok":
+                    warnings.append(
+                        f"Cua Driver health is {overall}."
+                    )
+                checks = report.get("checks")
+                if isinstance(checks, list):
+                    for check in checks:
+                        if not isinstance(check, Mapping):
+                            continue
+                        if check.get("status") != "fail":
+                            continue
+                        name = str(check.get("name") or "check")
+                        message = str(check.get("message") or "failed")
+                        hint = check.get("hint")
+                        detail = f"{name}: {message}"
+                        if isinstance(hint, str) and hint.strip():
+                            detail += f" — {hint.strip()}"
+                        warnings.append(detail)
+            except Exception as error:
+                warnings.append(
+                    f"Cua Driver health_report could not be read: {error}"
+                )
+
+        if (
+            sys.platform.startswith("linux")
+            and os.getenv("WAYLAND_DISPLAY")
+            and "gnome" in os.getenv("XDG_CURRENT_DESKTOP", "").casefold()
+            and not self.capture_bound_click
+        ):
+            warnings.append(
+                "GNOME Wayland is active but Driver does not advertise "
+                "capture-bound clicks. Update Driver and install/enable the "
+                "bundled WinRects helper for full screenshot-grounded actions."
+            )
+        return tuple(warnings)
+
     async def list_windows(self) -> list[dict[str, Any]]:
         args: dict[str, Any] = {}
         if self.has_property("list_windows", "on_screen_only"):
