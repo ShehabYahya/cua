@@ -67,8 +67,18 @@ fresh observation --> postcondition verifier --> next step / next subgoal
 - OpenRouter vision fallback for inaccessible/custom-drawn controls.
 - Capture-bound visual clicks only when Driver advertises `click.capture_id`;
   the harness never downgrades a stale visual click to an unbound coordinate.
-- Dynamic semantic actions, prepared-text typing, common hotkeys, scrolling,
-  visual actions, `done`, `reobserve`, and `abstain`.
+- Dynamic semantic actions, prepared-text typing, focused-window typing fallback,
+  common hotkeys (including F2 rename), double/right click where requested,
+  scrolling, visual actions, `done`, `reobserve`, and `abstain`.
+- Opportunistic typed Chromium/Electron page control through exact
+  `get_browser_state(..., semantic_v2)` refs. It is used only when Driver proves
+  `binding_quality: exact` and `mutation_allowed: true`; unsupported browsers
+  such as Firefox continue through native accessibility/visual control. The
+  harness never auto-attaches to a personal browser profile or grants browser
+  debugging consent.
+- Hierarchical Jev action selection: large desktop action pools are grouped and
+  narrowed through bounded Jev choices, while each individual Jev request stays
+  at 32 candidates or fewer.
 - OpenRouter Jev route through `POST /api/alpha/decisions` using
   `~typesafe/jev-latest` by default.
 - OpenRouter planner, writer, visual grounding, and postcondition verifier using
@@ -203,7 +213,10 @@ uv run python/cli.py --voice --speak --provider openrouter --allow-foreground
 
 Voice mode listens until you finish speaking, sends the WAV to OpenRouter's
 transcription endpoint, runs the same desktop agent, and asks for a spoken yes/no
-before consequential actions. Say `stop listening` or `goodbye` to exit.
+before consequential actions. Say `stop listening` or `goodbye` to exit
+between commands. Ctrl-C remains the immediate interrupt while a command is
+actively executing; continuous spoken barge-in during an in-flight provider/tool
+call is not implemented in v1.
 
 **Privacy note:** screenshot/chat requests use OpenRouter's no-data-collection +
 ZDR routing controls. OpenRouter's transcription endpoint currently does not
