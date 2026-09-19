@@ -262,3 +262,103 @@ def chooser_from_env(provider: str = "auto") -> TypeSafeChooser | OpenRouterChoo
     raise ValueError(
         "no Jev credential found; set OPENROUTER_API_KEY or TYPESAFE_API_KEY"
     )
+
+
+class HierarchicalChooser:
+    """Keep each Jev choice bounded while still considering a large action pool."""
+
+    def __init__(
+        self,
+        inner,
+        *,
+        max_leaf_candidates: int = 32,
+        group_size: int = 20,
+    ) -> None:
+        if max_leaf_candidates < 6:
+            raise ValueError("max_leaf_candidates is too small")
+        if group_size < 2 or group_size > max_leaf_candidates - 3:
+            raise ValueError("group_size does not fit the leaf budget")
+        self.inner = inner
+        self.max_leaf_candidates = max_leaf_candidates
+        self.group_size = group_size
+
+    async def choose(
+        self,
+        *,
+        goal: str,
+        observation: Observation,
+        candidates: list[Candidate],
+        history: list[StepRecord],
+    ) -> Decision:
+        if len(candidates) <= self.max_leaf_candidates:
+            return await self.inner.choose(
+                goal=goal,
+                observation=observation,
+                candidates=candidates,
+                history=history,
+            )
+
+        terminals = [
+            candidate
+            for candidate in candidates
+            if candidate.id in {"done", "reobserve", "abstain"}
+        ]
+        actions = [
+            candidate
+            for candidate in candidates
+            if candidate.id not in {"done", "reobserve", "abstain"}
+        ]
+        groups = [
+            actions[index : index + self.group_size]
+            for index in range(0, len(actions), self.group_size)
+        ]
+        group_candidates: list[Candidate] = []
+        for index, group in enumerate(groups):
+            preview = "; ".join(
+                f"{candidate.id}: {candidate.description}"
+                for candidate in group
+            )
+            group_candidates.append(
+                Candidate(
+                    id=f"group-{index}",
+                    description=(
+                        "Choose this action group if the useful next action is "
+                        f"inside it: {preview[:3500]}"
+                    ),
+                    tool=None,
+                    arguments={},
+                    source="hierarchy",
+                )
+            )
+        group_candidates.extend(terminals)
+        group_decision = await self.inner.choose(
+            goal=goal,
+            observation=observation,
+            candidates=group_candidates,
+            history=history,
+        )
+        if group_decision.selected_id in {"done", "reobserve", "abstain"}:
+            return group_decision
+        if not group_decision.selected_id.startswith("group-"):
+            raise ValueError(
+                f"hierarchical chooser selected unknown group: {group_decision.selected_id}"
+            )
+        try:
+            group_index = int(group_decision.selected_id.split("-", 1)[1])
+            selected_group = groups[group_index]
+        except (ValueError, IndexError):
+            raise ValueError("hierarchical chooser selected malformed group") from None
+
+        leaf_candidates = list(selected_group) + terminals
+        leaf = await self.inner.choose(
+            goal=goal,
+            observation=observation,
+            candidates=leaf_candidates,
+            history=history,
+        )
+        return Decision(
+            selected_id=leaf.selected_id,
+            confidence=min(group_decision.confidence, leaf.confidence),
+            probabilities=leaf.probabilities,
+            model=leaf.model or group_decision.model,
+        )
