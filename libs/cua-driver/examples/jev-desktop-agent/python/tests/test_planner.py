@@ -118,7 +118,7 @@ class PlannerTest(unittest.TestCase):
             )
         )
         self.assertEqual(len(plan.steps), 1)
-        self.assertEqual(plan.steps[0].app, "Mozilla Firefox")
+        self.assertEqual(plan.steps[0].app, "Firefox")
         self.assertEqual(
             plan.steps[0].goal,
             "Open Firefox, search the web for Alan Turing",
