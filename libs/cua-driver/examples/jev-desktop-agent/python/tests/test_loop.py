@@ -201,6 +201,104 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(driver.counter, 0)
         self.assertEqual(driver.executed, [])
 
+    def test_refuted_semantic_type_route_falls_back_to_focused_typing(self):
+        class TypeDriver(FakeDriver):
+            def __init__(self):
+                super().__init__()
+                self.typed = False
+
+            async def observe(self, app=None):
+                self.counter += 1
+                return Observation(
+                    f"s{self.counter}",
+                    7,
+                    9,
+                    "Firefox",
+                    "New Tab",
+                    (
+                        Element(
+                            1,
+                            f"s{self.counter}:1",
+                            "combo box",
+                            "Search with Google or enter address",
+                            value="Alan Turing" if self.typed else None,
+                        ),
+                    ),
+                )
+
+            async def execute(self, candidate):
+                self.executed.append(candidate.id)
+                if candidate.id.startswith("type-focused-"):
+                    self.typed = True
+                return {"effect": "unverifiable"}
+
+        class TypePlanner:
+            async def plan(self, goal, **kwargs):
+                return Plan(
+                    goal,
+                    (
+                        PlanStep(
+                            "Type the search query into the address bar",
+                            app="Firefox",
+                            text="Alan Turing",
+                            completion="The address bar contains Alan Turing",
+                        ),
+                    ),
+                )
+
+            async def repair_step(self, **kwargs):
+                return kwargs["current"]
+
+        class TypeChooser:
+            async def choose(self, *, candidates, history, **kwargs):
+                ids = {candidate.id for candidate in candidates}
+                semantic = next(
+                    (
+                        candidate.id
+                        for candidate in candidates
+                        if candidate.id.startswith("type-1-")
+                    ),
+                    None,
+                )
+                if not history and semantic:
+                    selected = semantic
+                else:
+                    selected = "type-focused-text-1"
+                    self_outer.assertIn(selected, ids)
+                return Decision(selected, 0.80, {selected: 0.80})
+
+        class TypeVerifier:
+            def __init__(self, driver):
+                self.driver = driver
+
+            async def verify(self, **kwargs):
+                return Verification(
+                    self.driver.typed,
+                    0.99 if self.driver.typed else 0.1,
+                    "typed" if self.driver.typed else "not typed",
+                )
+
+        self_outer = self
+        driver = TypeDriver()
+        messages = []
+        agent = AgentLoop(
+            driver,
+            TypeChooser(),
+            planner=TypePlanner(),
+            verifier=TypeVerifier(driver),
+            max_steps=5,
+            progress=messages.append,
+        )
+        result = asyncio.run(agent.run("search for Alan Turing", act=True))
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(len(driver.executed), 2)
+        self.assertTrue(driver.executed[0].startswith("type-1-"))
+        self.assertEqual(driver.executed[1], "type-focused-text-1")
+        self.assertIn(
+            "Suppressing 1 route(s)",
+            "\n".join(messages),
+        )
+
     def test_dry_run_never_executes(self):
         driver = FakeDriver()
         agent = AgentLoop(
