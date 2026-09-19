@@ -88,7 +88,9 @@ class TypeSafeChooser:
             "questions": {
                 "driver_action": Choice(
                     instructions=(
-                        "Select exactly one supplied candidate ID for the next desktop step."
+                        "Select exactly one supplied candidate ID for the next desktop step. "
+                        "Choose done only when the complete current goal is already visibly "
+                        "satisfied, never because only an intermediate clause is complete."
                     ),
                     criteria=criteria,
                 )
@@ -175,7 +177,9 @@ class OpenRouterChooser:
                 "driver_action": {
                     "type": "choice",
                     "instructions": (
-                        "Select exactly one supplied candidate ID for the next desktop step."
+                        "Select exactly one supplied candidate ID for the next desktop step. "
+                        "Choose done only when the complete current goal is already visibly "
+                        "satisfied, never because only an intermediate clause is complete."
                     ),
                     "criteria": criteria,
                 }
