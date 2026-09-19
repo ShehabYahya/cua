@@ -564,6 +564,8 @@ def build_candidates(
             )
         )
 
+    candidates = candidates[:action_limit]
+
     candidates.extend(
         [
             Candidate(
