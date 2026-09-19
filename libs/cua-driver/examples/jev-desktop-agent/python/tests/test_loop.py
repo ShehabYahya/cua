@@ -97,6 +97,67 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(driver.executed, ["click-1"])
         self.assertEqual(result.completed_subgoals, 1)
 
+    def test_sensitive_text_intent_is_blocked_on_generic_field(self):
+        class SensitiveDriver(FakeDriver):
+            async def observe(self, app=None):
+                self.counter += 1
+                return Observation(
+                    f"s{self.counter}",
+                    7,
+                    9,
+                    "Demo",
+                    "Login",
+                    (
+                        Element(
+                            1,
+                            f"s{self.counter}:1",
+                            "entry",
+                            "Input",
+                        ),
+                    ),
+                )
+
+        class TypeChooser:
+            async def choose(self, *, candidates, **kwargs):
+                selected = next(
+                    candidate.id
+                    for candidate in candidates
+                    if candidate.id.startswith("type-")
+                )
+                return Decision(selected, 0.99, {selected: 0.99})
+
+        class SensitivePlanner:
+            async def plan(self, goal, **kwargs):
+                return Plan(
+                    goal,
+                    (
+                        PlanStep(
+                            'enter password "secret"',
+                            app="Demo",
+                            completion="password entered",
+                        ),
+                    ),
+                )
+
+            async def repair_step(self, **kwargs):
+                return kwargs["current"]
+
+        driver = SensitiveDriver()
+        agent = AgentLoop(
+            driver,
+            TypeChooser(),
+            planner=SensitivePlanner(),
+            verifier=FakeVerifier(),
+        )
+        result = asyncio.run(
+            agent.run(
+                'enter password "secret"',
+                act=True,
+            )
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(driver.executed, [])
+
     def test_cancelled_before_execution_never_observes_or_executes(self):
         driver = FakeDriver()
         agent = AgentLoop(
