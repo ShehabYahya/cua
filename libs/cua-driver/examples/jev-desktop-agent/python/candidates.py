@@ -98,11 +98,12 @@ def _element_target(
     element: Element,
 ) -> dict[str, object]:
     target = _window_target(observation)
+    # Carry both modern and legacy snapshot addresses. The Driver adapter
+    # filters to the exact schema advertised by the installed version.
     if element.token:
         target["element_token"] = element.token
-    else:
-        target["element_index"] = element.index
-        target["snapshot_id"] = observation.snapshot_id
+    target["element_index"] = element.index
+    target["snapshot_id"] = observation.snapshot_id
     return target
 
 
