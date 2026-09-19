@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Any, Callable
@@ -270,6 +271,98 @@ def chooser_from_env(provider: str = "auto") -> TypeSafeChooser | OpenRouterChoo
     )
 
 
+_SHORTLIST_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "the",
+    "to",
+    "in",
+    "into",
+    "on",
+    "for",
+    "with",
+    "current",
+    "target",
+    "window",
+    "page",
+    "control",
+    "button",
+    "field",
+    "click",
+    "activate",
+    "open",
+    "press",
+    "type",
+    "put",
+    "prepared",
+    "text",
+    "run",
+    "do",
+}
+
+
+def _shortlist_words(text: str) -> set[str]:
+    return {
+        word
+        for word in re.findall(r"[a-z0-9]+", text.casefold())
+        if len(word) > 1 and word not in _SHORTLIST_STOPWORDS
+    }
+
+
+def _relevant_shortlist(
+    goal: str,
+    candidates: list[Candidate],
+    *,
+    limit: int,
+) -> list[Candidate] | None:
+    terminals = [
+        candidate
+        for candidate in candidates
+        if candidate.id in {"done", "reobserve", "abstain"}
+    ]
+    actions = [
+        candidate
+        for candidate in candidates
+        if candidate.id not in {"done", "reobserve", "abstain"}
+    ]
+    goal_words = _shortlist_words(goal)
+    if not goal_words:
+        return None
+
+    ranked: list[tuple[int, int, Candidate]] = []
+    for index, candidate in enumerate(actions):
+        overlap = len(goal_words & _shortlist_words(candidate.description))
+        priority = 1 if candidate.source in {"shortcut", "keyboard"} else 0
+        if overlap or priority:
+            ranked.append((overlap, priority, candidate))
+
+    if not ranked:
+        return None
+
+    ranked.sort(
+        key=lambda item: (item[0], item[1]),
+        reverse=True,
+    )
+    room = max(0, limit - len(terminals))
+    selected = [item[2] for item in ranked[:room]]
+    selected_ids = {candidate.id for candidate in selected}
+
+    # Keep a small hedge of the builder's already relevance-sorted actions so
+    # synonym mismatches do not make lexical shortlisting brittle.
+    for candidate in actions:
+        if len(selected) >= room or len(selected) >= 24:
+            break
+        if candidate.id in selected_ids:
+            continue
+        selected.append(candidate)
+        selected_ids.add(candidate.id)
+
+    if not selected or len(selected) + len(terminals) > limit:
+        return None
+    return selected + terminals
+
+
 class HierarchicalChooser:
     """Keep each Jev choice bounded while still considering a large action pool."""
 
@@ -301,6 +394,19 @@ class HierarchicalChooser:
                 goal=goal,
                 observation=observation,
                 candidates=candidates,
+                history=history,
+            )
+
+        shortlist = _relevant_shortlist(
+            goal,
+            candidates,
+            limit=self.max_leaf_candidates,
+        )
+        if shortlist is not None:
+            return await self.inner.choose(
+                goal=goal,
+                observation=observation,
+                candidates=shortlist,
                 history=history,
             )
 
