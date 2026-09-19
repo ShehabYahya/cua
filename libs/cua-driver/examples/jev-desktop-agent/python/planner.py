@@ -28,6 +28,36 @@ class Planner(Protocol):
 
 
 class PassThroughPlanner:
+    @staticmethod
+    def _infer_app(
+        goal: str,
+        desktop: DesktopOverview | None,
+    ) -> str | None:
+        if desktop is None:
+            return None
+        normalized = goal.casefold()
+        names: list[str] = []
+        for raw in (*desktop.windows, *desktop.apps):
+            name = raw.get("app_name") or raw.get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+        unique = sorted(set(names), key=len, reverse=True)
+        for name in unique:
+            lowered = name.casefold()
+            if lowered in normalized:
+                return name
+            tokens = [
+                token
+                for token in re.findall(r"[a-z0-9]+", lowered)
+                if len(token) >= 4
+            ]
+            if any(
+                re.search(rf"\b{re.escape(token)}\b", normalized)
+                for token in tokens
+            ):
+                return name
+        return None
+
     async def plan(
         self,
         goal: str,
@@ -35,7 +65,17 @@ class PassThroughPlanner:
         desktop: DesktopOverview | None = None,
         recent_context: tuple[str, ...] = (),
     ) -> Plan:
-        return Plan(goal=goal, steps=(PlanStep(goal=goal, completion=goal),))
+        app = self._infer_app(goal, desktop)
+        return Plan(
+            goal=goal,
+            steps=(
+                PlanStep(
+                    goal=goal,
+                    app=app,
+                    completion=goal,
+                ),
+            ),
+        )
 
     async def repair_step(
         self,
