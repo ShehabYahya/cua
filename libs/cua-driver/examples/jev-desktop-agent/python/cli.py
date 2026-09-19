@@ -195,6 +195,10 @@ async def main_async(args: argparse.Namespace) -> int:
     run_error: Exception | None = None
     result = None
     async with CuaMcpDriver() as driver:
+        warnings = await driver.health_warnings()
+        for warning in warnings:
+            print(f"[preflight] {warning}")
+
         agent = AgentLoop(
             driver,
             chooser,
