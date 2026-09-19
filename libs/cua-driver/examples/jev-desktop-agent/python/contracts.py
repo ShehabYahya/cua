@@ -297,6 +297,7 @@ class DesktopDriver(Protocol):
         self,
         *,
         include_screenshot: bool = True,
+        include_apps: bool = True,
     ) -> DesktopOverview: ...
 
     async def has_window(self, app: str) -> bool: ...
