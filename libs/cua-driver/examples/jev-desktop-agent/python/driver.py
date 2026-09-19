@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import sys
 import uuid
+from contextlib import AsyncExitStack
 from typing import Any, Mapping
 
 from mcp import ClientSession, StdioServerParameters
@@ -10,31 +12,48 @@ from mcp.client.stdio import stdio_client
 from contracts import Candidate, Element, Observation
 
 
+def driver_child_environment() -> dict[str, str]:
+    """Build the cua-driver child environment without enabling a screen reader."""
+    env = os.environ.copy()
+    if sys.platform.startswith("linux"):
+        env.setdefault("CUA_DRIVER_RS_A11Y_ADVERTISE_MODE", "is_enabled_only")
+    return env
+
+
 class CuaMcpDriver:
     """Persistent Cua Driver MCP session for native desktop observations/actions."""
 
     def __init__(self, binary: str | None = None) -> None:
         self._binary = binary or os.getenv("CUA_DRIVER_BIN", "cua-driver")
         self._label = f"jev-desktop-{uuid.uuid4().hex[:8]}"
-        self._stdio_cm = None
-        self._session_cm = None
+        self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
 
     async def __aenter__(self) -> "CuaMcpDriver":
-        params = StdioServerParameters(command=self._binary, args=["mcp"])
-        self._stdio_cm = stdio_client(params)
-        read, write = await self._stdio_cm.__aenter__()
-        self._session_cm = ClientSession(read, write)
-        self._session = await self._session_cm.__aenter__()
-        await self._session.initialize()
-        return self
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
+        try:
+            params = StdioServerParameters(
+                command=self._binary,
+                args=["mcp"],
+                env=driver_child_environment(),
+            )
+            read, write = await self._stack.enter_async_context(stdio_client(params))
+            self._session = await self._stack.enter_async_context(ClientSession(read, write))
+            await self._session.initialize()
+            return self
+        except BaseException:
+            await self._stack.aclose()
+            self._stack = None
+            self._session = None
+            raise
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        if self._session_cm is not None:
-            await self._session_cm.__aexit__(exc_type, exc, tb)
-        if self._stdio_cm is not None:
-            await self._stdio_cm.__aexit__(exc_type, exc, tb)
+        stack = self._stack
+        self._stack = None
         self._session = None
+        if stack is not None:
+            await stack.__aexit__(exc_type, exc, tb)
 
     async def _call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if self._session is None:
@@ -62,6 +81,17 @@ class CuaMcpDriver:
                 in f"{window.get('app_name', '')} {window.get('title', '')}".casefold()
             ]
         if not visible:
+            if (
+                sys.platform.startswith("linux")
+                and not os.getenv("DISPLAY")
+                and not os.getenv("WAYLAND_DISPLAY")
+            ):
+                raise RuntimeError(
+                    "no visible windows: this shell has neither DISPLAY nor "
+                    "WAYLAND_DISPLAY. Run the agent from a terminal inside the "
+                    "graphical desktop session (or restore that session's display "
+                    "environment) before controlling desktop apps."
+                )
             message = f"no visible window matched {app!r}" if app else "no visible windows"
             raise RuntimeError(message)
 
