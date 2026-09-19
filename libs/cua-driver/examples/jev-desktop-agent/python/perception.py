@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -56,11 +57,40 @@ class OpenRouterVisionPerceiver:
     async def enrich(self, goal: str, observation: Observation) -> Observation:
         import asyncio
 
-        if observation.visual_regions or not observation.screenshot_path:
+        if not observation.screenshot_path:
             return observation
         path = Path(observation.screenshot_path)
         if not path.is_file():
             return observation
+
+        goal_words = {
+            word
+            for word in re.findall(r"[a-z0-9]+", goal.casefold())
+            if len(word) > 1
+        }
+        evidence_labels = [
+            element.label
+            for element in observation.elements
+            if element.label
+        ] + [
+            region.label
+            for region in observation.visual_regions
+            if region.label
+        ]
+        evidence_words = {
+            word
+            for label in evidence_labels
+            for word in re.findall(r"[a-z0-9]+", label.casefold())
+            if len(word) > 1
+        }
+        already_grounded = bool(goal_words & evidence_words)
+        if (
+            already_grounded
+            and not observation.degraded
+            and not observation.truncated
+        ):
+            return observation
+
         try:
             regions, summary = await asyncio.to_thread(
                 self._parse_sync,
@@ -69,10 +99,22 @@ class OpenRouterVisionPerceiver:
             )
         except Exception:
             return observation
+
+        new_regions = list(_dedupe(observation, regions))
+        existing = list(observation.visual_regions)
+        merged = list(existing)
+        for region in new_regions:
+            if any(
+                _iou(region.bounds, current.bounds) >= 0.65
+                for current in merged
+            ):
+                continue
+            merged.append(region)
+
         return replace(
             observation,
-            visual_regions=_dedupe(observation, regions),
-            visual_summary=summary,
+            visual_regions=tuple(merged),
+            visual_summary=summary or observation.visual_summary,
         )
 
     def _parse_sync(
