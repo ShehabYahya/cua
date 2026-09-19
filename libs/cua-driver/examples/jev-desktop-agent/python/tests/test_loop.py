@@ -18,7 +18,7 @@ class FakeDriver:
         self.counter = 0
         self.executed = []
 
-    async def desktop_overview(self):
+    async def desktop_overview(self, *, include_screenshot=True):
         from contracts import DesktopOverview
         return DesktopOverview((), ())
 
