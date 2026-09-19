@@ -46,6 +46,15 @@ class PassThroughPlanner:
             ("file manager", "Files"),
             ("settings", "Settings"),
         )
+        # Prefer stable canonical app names from the user command before
+        # looking at live window metadata. On GNOME/Wayland, list_windows may
+        # report a title-like app_name such as
+        # "Jesse Model Analysis — Mozilla Firefox"; that title changes as soon
+        # as a new tab/page opens and is not a stable selector.
+        for phrase, app_name in aliases:
+            if re.search(rf"\b{re.escape(phrase)}\b", normalized):
+                return app_name
+
         names: list[str] = []
         for raw in (*desktop.windows, *desktop.apps):
             name = raw.get("app_name") or raw.get("name")
@@ -66,9 +75,6 @@ class PassThroughPlanner:
                 for token in tokens
             ):
                 return name
-        for phrase, app_name in aliases:
-            if re.search(rf"\b{re.escape(phrase)}\b", normalized):
-                return app_name
         return None
 
     async def plan(
