@@ -306,7 +306,12 @@ class DesktopDriver(Protocol):
 
     async def revive_session(self) -> None: ...
 
-    async def observe(self, app: str | None = None) -> Observation: ...
+    async def observe(
+        self,
+        app: str | None = None,
+        *,
+        include_screenshot: bool = True,
+    ) -> Observation: ...
 
     async def execute(self, candidate: Candidate) -> Mapping[str, Any]: ...
 
