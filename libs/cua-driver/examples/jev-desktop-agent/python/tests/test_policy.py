@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from policy import classify_risk, field_is_sensitive
+from policy import classify_risk, field_is_sensitive, sensitive_text_intent
 
 
 class PolicyTest(unittest.TestCase):
@@ -29,6 +29,10 @@ class PolicyTest(unittest.TestCase):
 
     def test_pin_rule_does_not_match_shipping(self):
         self.assertFalse(field_is_sensitive("Shipping address"))
+
+    def test_sensitive_text_intent_requires_entry_verb(self):
+        self.assertTrue(sensitive_text_intent("type my password"))
+        self.assertFalse(sensitive_text_intent("open my password manager"))
 
 
 if __name__ == "__main__":
