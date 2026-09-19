@@ -27,6 +27,9 @@ class PolicyTest(unittest.TestCase):
             "deny",
         )
 
+    def test_pin_rule_does_not_match_shipping(self):
+        self.assertFalse(field_is_sensitive("Shipping address"))
+
 
 if __name__ == "__main__":
     unittest.main()
