@@ -14,10 +14,12 @@ invents tool names, targets, coordinates, or arguments.
 ```text
 voice or text command
         |
-        +--> OpenRouter planner --> ordered GUI subgoals + typed text slots
+        +--> direct single-goal mode (default; no planner model call)
+        |       or
+        +--> optional OpenRouter planner (--planner)
         |
         v
-Cua desktop overview (window/app list + desktop screenshot when available)
+Cua desktop overview (visible windows first; richer inventory only when needed)
         |
         v
 select/launch target app
@@ -46,9 +48,10 @@ local policy + stale-state validation
 Cua executes at most one action
         |
         v
-fresh observation --> postcondition verifier --> next step / next subgoal
+fresh observation --> next Jev action
         |
-        +--> stuck detection / repair planner / foreground escalation gate
+        +--> full verifier only when Jev says done
+        +--> stuck detection / optional repair planner / foreground escalation gate
 ```
 
 ## What is implemented
@@ -57,9 +60,11 @@ fresh observation --> postcondition verifier --> next step / next subgoal
 - GNOME/Wayland-safe child environment (`IsEnabled` accessibility advertisement;
   no `ScreenReaderEnabled` advertisement that can launch Orca).
 - Native Wayland opt-in when a Wayland session is detected.
-- Desktop overview: apps, windows, and primary-desktop screenshot when Driver can
-  prove/capture it.
-- Automatic app launch for planner-selected applications.
+- Fast direct mode is the default: the entire user command stays one goal and
+  does not make a planner-model call. Visible windows are read first; app
+  inventory and desktop screenshots are skipped until needed.
+- Optional multi-subgoal OpenRouter planning with `--planner`.
+- Automatic app launch for locally inferred or planner-selected applications.
 - Runtime preflight diagnostics through `--check`, including Driver health,
   visible-window/app counts, visual/capture capabilities, and GNOME Wayland
   remediation hints.
@@ -84,11 +89,19 @@ fresh observation --> postcondition verifier --> next step / next subgoal
   at 32 candidates or fewer.
 - OpenRouter Jev route through `POST /api/alpha/decisions` using
   `~typesafe/jev-latest` by default.
-- OpenRouter planner, writer, visual grounding, and postcondition verifier using
-  `openrouter/auto` by default; models are independently configurable.
-- Multi-subgoal execution with fresh state after every mutation.
-- Completion verification, low-confidence repair, no-progress detection,
-  repeated-action detection, and bounded replanning.
+- OpenRouter writer, visual grounding, and postcondition verifier using
+  `openrouter/auto` by default; the planner is opt-in. Common search/rename
+  text is extracted locally instead of spending a writer-model call.
+- One-goal execution by default with fresh state after every mutation; optional
+  multi-subgoal execution when `--planner` is explicitly enabled.
+- Remote verification is deferred until Jev proposes `done` by default.
+  Deterministic local checks verify common states such as typed text, a new tab,
+  and search-result pages without a model call. `--verify-every-action`
+  restores the slower full-verifier behavior.
+- Margin- and risk-aware Jev confidence policy, no-progress detection,
+  repeated-action suppression, and bounded recovery.
+- Explicit Cua lifecycle-session management and automatic revival after a
+  `session_ended` refusal.
 - Local consequential-action confirmation policy (send/publish/delete/pay/
   install/permission/account actions) and hard refusal to generate/type password,
   OTP, card-security-code, recovery-code, private-key, or seed-phrase fields.
@@ -197,7 +210,8 @@ uv run python/cli.py \
   --json
 ```
 
-Execute a real multi-step goal:
+Execute a real goal. By default this is **one agent goal**, not a planner-made
+step list:
 
 ```bash
 uv run python/cli.py \
@@ -206,6 +220,19 @@ uv run python/cli.py \
   --act \
   --allow-foreground \
   --json
+```
+
+For tasks that genuinely benefit from explicit decomposition, opt in:
+
+```bash
+--planner
+```
+
+For debugging or high-assurance runs that should invoke the full verifier after
+every mutation instead of only at `done`:
+
+```bash
+--verify-every-action
 ```
 
 `--allow-foreground` does **not** force foreground input. The harness always tries
@@ -263,7 +290,8 @@ OpenRouter.
    slot such as `text-1`, and field values are masked as `<set>` in Jev state.
 5. One action is executed per observation, followed by reobservation.
 6. `done` is not trusted by itself; the verifier must confirm the postcondition.
-7. Repeated no-progress actions trigger repair/replanning instead of blind retry.
+7. Repeated no-progress actions are suppressed instead of blindly retried; the
+   planner is consulted only when planner mode was explicitly enabled.
 8. Passwords/OTP/card-security-code/recovery/private-key/seed fields are not
    automatically filled.
 9. Consequential actions require confirmation unless explicitly pre-authorized.
