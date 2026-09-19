@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from candidates import build_candidates
 from contracts import (
@@ -19,6 +19,7 @@ from contracts import (
 )
 from perception import NoopPerceiver
 from planner import PassThroughPlanner
+from policy import classify_risk
 from verifier import ConservativeVerifier, GoalVerifier, state_changed
 from writer import (
     OpenRouterWriter,
@@ -361,6 +362,14 @@ class AgentLoop:
                     )
                     self._remember(goal, result)
                     return result
+
+                if candidate.risk == "safe":
+                    contextual_risk = classify_risk(
+                        f"{current.goal} {candidate.description}",
+                        tool=candidate.tool,
+                    )
+                    if contextual_risk == "confirm":
+                        candidate = replace(candidate, risk="confirm")
 
                 if candidate.risk == "deny":
                     history.append(
