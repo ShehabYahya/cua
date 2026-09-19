@@ -1,0 +1,51 @@
+name: "CI: Jev desktop agent"
+
+on:
+  pull_request:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/**"
+      - ".github/workflows/ci-jev-desktop-agent.yml"
+  push:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/**"
+      - ".github/workflows/ci-jev-desktop-agent.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-jev-desktop-agent-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: libs/cua-driver/examples/jev-desktop-agent
+
+jobs:
+  python-unit:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.15"
+          enable-cache: true
+      - name: Install example dependencies
+        run: uv sync
+      - name: Compile Python sources
+        run: uv run python -m compileall -q python
+      - name: Run credential-free unit tests
+        env:
+          OPENROUTER_API_KEY: ""
+          TYPESAFE_API_KEY: ""
+        run: uv run python -m unittest discover -s python/tests -v
