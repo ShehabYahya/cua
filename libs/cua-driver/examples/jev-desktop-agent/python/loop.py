@@ -20,6 +20,7 @@ from contracts import (
 from perception import NoopPerceiver
 from planner import PassThroughPlanner
 from policy import classify_risk
+from resources import DownloadTracker
 from verifier import ConservativeVerifier, GoalVerifier, state_changed
 from writer import (
     OpenRouterWriter,
@@ -65,6 +66,8 @@ class AgentLoop:
         self._min_confidence = min_confidence
         self._max_repairs = max_repairs_per_subgoal
         self._download_root = download_root
+        self._download_tracker = DownloadTracker(download_root)
+        self._recent_files: tuple[str, ...] = ()
         self._recent_context: list[str] = []
 
     @property
@@ -217,6 +220,9 @@ class AgentLoop:
                     max_candidates=self._max_candidates,
                     allow_visual_clicks=self._driver.capture_bound_click,
                     download_root=self._download_root,
+                    recent_files=self._download_tracker.validate_recent(
+                        self._recent_files
+                    ),
                 )
                 decision_goal = redact_prepared_text(
                     current.goal,
@@ -487,6 +493,7 @@ class AgentLoop:
                     self._remember(goal, result)
                     return result
 
+                files_before = self._download_tracker.snapshot()
                 executed_candidate: Candidate = candidate
                 try:
                     action_result = await self._driver.execute(
@@ -557,6 +564,33 @@ class AgentLoop:
                     )
                     self._remember(goal, result)
                     return result
+
+                file_wait = (
+                    5.0
+                    if (
+                        candidate.tool == "browser_download"
+                        or "download" in candidate.description.casefold()
+                    )
+                    else 0.0
+                )
+                file_changes = await self._download_tracker.wait_for_changes(
+                    files_before,
+                    timeout=file_wait,
+                )
+                if file_changes:
+                    remembered = tuple(stamp.path for stamp in file_changes)
+                    self._recent_files = self._download_tracker.validate_recent(
+                        remembered + self._recent_files
+                    )
+                    file_names = ", ".join(
+                        f'"{stamp.name}"'
+                        for stamp in file_changes[:4]
+                    )
+                    self._recent_context.append(
+                        "Local file resource changed in the approved "
+                        f"download directory: {file_names}."
+                    )
+                    self._recent_context[:] = self._recent_context[-8:]
 
                 effect = (
                     action_result.get("effect")
