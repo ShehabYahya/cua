@@ -49,7 +49,7 @@ class AgentLoop:
         perceiver=None,
         writer: OpenRouterWriter | None = None,
         max_steps: int = 30,
-        max_candidates: int = 32,
+        max_candidates: int = 96,
         min_confidence: float = 0.55,
         max_repairs_per_subgoal: int = 2,
     ) -> None:
