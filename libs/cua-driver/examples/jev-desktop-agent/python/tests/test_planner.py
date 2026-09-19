@@ -7,7 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from planner import OpenRouterPlanner
+from contracts import DesktopOverview
+from planner import OpenRouterPlanner, PassThroughPlanner
 
 
 class FakeClient:
@@ -78,6 +79,30 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual(
             plan.steps[-1].completion,
             "Alan Turing search results are visible",
+        )
+
+
+    def test_direct_mode_infers_firefox_without_model(self):
+        planner = PassThroughPlanner()
+        plan = asyncio.run(
+            planner.plan(
+                "Open Firefox, search the web for Alan Turing",
+                desktop=DesktopOverview(
+                    windows=(
+                        {
+                            "app_name": "Mozilla Firefox",
+                            "title": "Mozilla Firefox",
+                        },
+                    ),
+                    apps=(),
+                ),
+            )
+        )
+        self.assertEqual(len(plan.steps), 1)
+        self.assertEqual(plan.steps[0].app, "Mozilla Firefox")
+        self.assertEqual(
+            plan.steps[0].goal,
+            "Open Firefox, search the web for Alan Turing",
         )
 
 
