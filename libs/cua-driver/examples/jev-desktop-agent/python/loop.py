@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from typing import Callable
 
 from candidates import build_candidates
+from confidence import assess_decision
 from contracts import (
     ABSTAIN,
     DONE,
@@ -207,6 +208,8 @@ class AgentLoop:
             repairs = 0
             no_progress = 0
             reobserve_count = 0
+            low_confidence_count = 0
+            done_refuted_fingerprint: str | None = None
             last_candidate_id: str | None = None
             repeat_count = 0
             prepared: tuple[PreparedText, ...] | None = None
@@ -275,6 +278,19 @@ class AgentLoop:
                         self._recent_files
                     ),
                 )
+                if (
+                    done_refuted_fingerprint is not None
+                    and done_refuted_fingerprint == observation.fingerprint()
+                ):
+                    candidates = [
+                        candidate
+                        for candidate in candidates
+                        if candidate.id != DONE
+                    ]
+                    self._progress(
+                        "Completion was already refuted on this exact state; "
+                        "temporarily suppressing the done candidate."
+                    )
                 self._progress(
                     f"Built {len(candidates)} candidate action(s); asking Jev..."
                 )
@@ -295,9 +311,18 @@ class AgentLoop:
                     current_capture_id=observation.capture_id,
                 )
                 global_step += 1
+                assessment = assess_decision(
+                    decision,
+                    candidates,
+                    min_confidence=self._min_confidence,
+                )
                 self._progress(
                     f"Jev selected {candidate.id} "
-                    f"({decision.confidence:.0%}): {candidate.description}"
+                    f"({decision.confidence:.0%}; "
+                    f"p={assessment.selected_probability:.0%}, "
+                    f"runner-up={assessment.runner_up_probability:.0%}, "
+                    f"margin={assessment.margin:.0%}): "
+                    f"{candidate.description}"
                 )
 
                 if candidate.id == last_candidate_id:
@@ -306,7 +331,8 @@ class AgentLoop:
                     repeat_count = 1
                     last_candidate_id = candidate.id
 
-                if decision.confidence < self._min_confidence:
+                if not assessment.accepted:
+                    low_confidence_count += 1
                     history.append(
                         StepRecord(
                             global_step,
@@ -318,12 +344,24 @@ class AgentLoop:
                             False,
                             "low_confidence",
                             reason=(
-                                "Jev confidence below policy threshold"
+                                f"{assessment.reason}; "
+                                f"p={assessment.selected_probability:.3f}, "
+                                f"runner_up={assessment.runner_up_probability:.3f}, "
+                                f"margin={assessment.margin:.3f}"
                             ),
                         )
                     )
+                    if low_confidence_count < 2:
+                        self._progress(
+                            "Decision is ambiguous; re-observing once before "
+                            "spending a planner repair call."
+                        )
+                        continue
                     if repairs < self._max_repairs:
-                        self._progress("Low confidence; asking planner to repair the subgoal...")
+                        self._progress(
+                            "Decision stayed ambiguous; asking planner to repair "
+                            "the subgoal."
+                        )
                         current = await self._planner.repair_step(
                             original_goal=goal,
                             current=current,
@@ -331,6 +369,7 @@ class AgentLoop:
                             history=history,
                         )
                         repairs += 1
+                        low_confidence_count = 0
                         prepared = None
                         continue
                     result = RunResult(
@@ -342,6 +381,8 @@ class AgentLoop:
                     )
                     self._remember(goal, result)
                     return result
+
+                low_confidence_count = 0
 
                 if candidate.id == DONE:
                     self._progress("Jev says the subgoal is done; verifying independently...")
@@ -379,6 +420,7 @@ class AgentLoop:
                             f"Subgoal {subgoal_index}/{len(plan.steps)} complete."
                         )
                         break
+                    done_refuted_fingerprint = observation.fingerprint()
                     if repairs < self._max_repairs:
                         current = await self._planner.repair_step(
                             original_goal=goal,
@@ -685,6 +727,8 @@ class AgentLoop:
                     after,
                 )
                 changed = state_changed(observation, after)
+                if changed:
+                    done_refuted_fingerprint = None
                 history.append(
                     StepRecord(
                         global_step,
