@@ -68,7 +68,18 @@ class OpenRouterPlanner:
     ) -> Plan:
         import asyncio
 
-        return await asyncio.to_thread(self._plan_sync, goal, desktop, recent_context)
+        try:
+            return await asyncio.to_thread(
+                self._plan_sync,
+                goal,
+                desktop,
+                recent_context,
+            )
+        except Exception:
+            return Plan(
+                goal=goal,
+                steps=(PlanStep(goal=goal, completion=goal),),
+            )
 
     def _plan_sync(
         self,
@@ -144,9 +155,16 @@ Rules:
     ) -> PlanStep:
         import asyncio
 
-        return await asyncio.to_thread(
-            self._repair_sync, original_goal, current, observation, history
-        )
+        try:
+            return await asyncio.to_thread(
+                self._repair_sync,
+                original_goal,
+                current,
+                observation,
+                history,
+            )
+        except Exception:
+            return current
 
     def _repair_sync(
         self,
