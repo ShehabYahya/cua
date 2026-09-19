@@ -83,6 +83,28 @@ class FakeVerifier:
 
 
 class LoopTest(unittest.TestCase):
+    def test_progress_reports_live_stages(self):
+        driver = FakeDriver()
+        messages = []
+        agent = AgentLoop(
+            driver,
+            FakeChooser(),
+            planner=FakePlanner(),
+            verifier=FakeVerifier(),
+            max_steps=4,
+            progress=messages.append,
+        )
+        result = asyncio.run(agent.run("open new tab", act=True))
+        self.assertEqual(result.status, "completed")
+        joined = "\n".join(messages)
+        self.assertIn("Reading desktop state", joined)
+        self.assertIn("Planning task", joined)
+        self.assertIn("Subgoal 1/1", joined)
+        self.assertIn("asking Jev", joined)
+        self.assertIn("Executing:", joined)
+        self.assertIn("Verifying subgoal completion", joined)
+        self.assertIn("All planned subgoals completed", joined)
+
     def test_execute_reobserve_verify_completes(self):
         driver = FakeDriver()
         agent = AgentLoop(
