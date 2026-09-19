@@ -39,7 +39,7 @@ class FakeDriver:
     async def revive_session(self):
         return None
 
-    async def observe(self, app=None):
+    async def observe(self, app=None, *, include_screenshot=True):
         self.counter += 1
         label = "New Tab" if self.counter == 1 else "Search the web"
         return Observation(
@@ -132,7 +132,7 @@ class LoopTest(unittest.TestCase):
 
     def test_sensitive_text_intent_is_blocked_on_generic_field(self):
         class SensitiveDriver(FakeDriver):
-            async def observe(self, app=None):
+            async def observe(self, app=None, *, include_screenshot=True):
                 self.counter += 1
                 return Observation(
                     f"s{self.counter}",
@@ -218,7 +218,7 @@ class LoopTest(unittest.TestCase):
                 super().__init__()
                 self.typed = False
 
-            async def observe(self, app=None):
+            async def observe(self, app=None, *, include_screenshot=True):
                 self.counter += 1
                 return Observation(
                     f"s{self.counter}",
