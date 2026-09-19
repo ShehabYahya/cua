@@ -76,5 +76,42 @@ class VerifierTest(unittest.TestCase):
         self.assertTrue(result.done)
 
 
+    def test_search_results_are_inferred_from_original_goal(self):
+        verifier = OpenRouterVerifier(FailIfCalledClient())
+        observation = Observation(
+            "s1",
+            7,
+            9,
+            "Firefox",
+            "Alan Turing - Google Search — Mozilla Firefox",
+            (
+                Element(1, "s1:1", "link", "Alan Turing - Wikipedia"),
+                Element(2, "s1:2", "link", "Alan Turing | Britannica"),
+                Element(3, "s1:3", "link", "Alan Turing biography"),
+            ),
+        )
+        result = asyncio.run(
+            verifier.verify(
+                original_goal=(
+                    "Open Firefox, open a new tab, search the web for Alan "
+                    "Turing, and stop when the search results are visible"
+                ),
+                step=PlanStep(
+                    "Open Firefox, open a new tab, search the web for Alan "
+                    "Turing, and stop when the search results are visible",
+                    app="Firefox",
+                    completion=(
+                        "Open Firefox, open a new tab, search the web for "
+                        "Alan Turing, and stop when the search results are visible"
+                    ),
+                ),
+                observation=observation,
+                history=[],
+            )
+        )
+        self.assertTrue(result.done)
+        self.assertEqual(result.confidence, 0.98)
+
+
 if __name__ == "__main__":
     unittest.main()
