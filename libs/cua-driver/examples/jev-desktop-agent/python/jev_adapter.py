@@ -90,7 +90,10 @@ class TypeSafeChooser:
                     instructions=(
                         "Select exactly one supplied candidate ID for the next desktop step. "
                         "Choose done only when the complete current goal is already visibly "
-                        "satisfied, never because only an intermediate clause is complete."
+                        "satisfied, never because only an intermediate clause is complete. "
+                        "Choose reobserve only when the observation is stale, degraded, truncated, "
+                        "or genuinely missing evidence that a fresh capture could provide; do not "
+                        "use reobserve as a generic hesitation when actionable candidates are present."
                     ),
                     criteria=criteria,
                 )
@@ -179,7 +182,10 @@ class OpenRouterChooser:
                     "instructions": (
                         "Select exactly one supplied candidate ID for the next desktop step. "
                         "Choose done only when the complete current goal is already visibly "
-                        "satisfied, never because only an intermediate clause is complete."
+                        "satisfied, never because only an intermediate clause is complete. "
+                        "Choose reobserve only when the observation is stale, degraded, truncated, "
+                        "or genuinely missing evidence that a fresh capture could provide; do not "
+                        "use reobserve as a generic hesitation when actionable candidates are present."
                     ),
                     "criteria": criteria,
                 }
