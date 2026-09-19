@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable
 
+from confidence import assess_decision
 from contracts import Candidate, Decision, Observation, StepRecord
 
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
@@ -337,8 +338,36 @@ class HierarchicalChooser:
             candidates=group_candidates,
             history=history,
         )
+        group_assessment = assess_decision(
+            group_decision,
+            group_candidates,
+            min_confidence=0.45,
+            probability_floor=0.25,
+            min_margin=0.08,
+        )
         if group_decision.selected_id in {"done", "reobserve", "abstain"}:
             return group_decision
+        if not group_assessment.accepted:
+            terminal = next(
+                (
+                    candidate
+                    for candidate in terminals
+                    if candidate.id == "reobserve"
+                ),
+                None,
+            )
+            if terminal is None:
+                terminal = next(
+                    candidate
+                    for candidate in terminals
+                    if candidate.id == "abstain"
+                )
+            return Decision(
+                selected_id=terminal.id,
+                confidence=group_decision.confidence,
+                probabilities=group_decision.probabilities,
+                model=group_decision.model,
+            )
         if not group_decision.selected_id.startswith("group-"):
             raise ValueError(
                 f"hierarchical chooser selected unknown group: {group_decision.selected_id}"
@@ -358,7 +387,10 @@ class HierarchicalChooser:
         )
         return Decision(
             selected_id=leaf.selected_id,
-            confidence=min(group_decision.confidence, leaf.confidence),
+            # The group choice is a retrieval/narrowing stage. Its ambiguity is
+            # handled above. Expose the leaf action confidence here instead of
+            # depressing every action with min(group, leaf).
+            confidence=leaf.confidence,
             probabilities=leaf.probabilities,
             model=leaf.model or group_decision.model,
         )
