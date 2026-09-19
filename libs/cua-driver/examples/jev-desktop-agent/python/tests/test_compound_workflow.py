@@ -79,7 +79,7 @@ class CompoundDriver:
     def with_foreground(self, candidate):
         return candidate
 
-    async def observe(self, app=None):
+    async def observe(self, app=None, *, include_screenshot=True):
         self.counter += 1
         snapshot = f"s{self.counter}"
         if app == "Files":
