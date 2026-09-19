@@ -393,6 +393,122 @@ class CuaMcpDriver:
 
         return max(visible, key=area)
 
+    async def _browser_semantic_state(
+        self,
+        pid: int,
+        window_id: int,
+    ) -> tuple[
+        tuple[Element, ...],
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+    ]:
+        if not self.has_tool("get_browser_state"):
+            return (), None, None, None, None
+        try:
+            bind = await self._call(
+                "get_browser_state",
+                {"pid": pid, "window_id": window_id},
+            )
+        except Exception:
+            return (), None, None, None, None
+        if (
+            bind.get("status") != "ok"
+            or bind.get("binding_quality") != "exact"
+            or bind.get("mutation_allowed") is not True
+        ):
+            return (), None, None, None, None
+        target_id = bind.get("target_id")
+        tabs = bind.get("tabs")
+        if not isinstance(target_id, str) or not isinstance(tabs, list):
+            return (), None, None, None, None
+        active = [
+            tab
+            for tab in tabs
+            if isinstance(tab, Mapping)
+            and tab.get("active") is True
+            and isinstance(tab.get("tab_id"), str)
+        ]
+        if len(active) == 1:
+            tab_id = str(active[0]["tab_id"])
+        elif len(tabs) == 1 and isinstance(tabs[0], Mapping) and isinstance(
+            tabs[0].get("tab_id"), str
+        ):
+            tab_id = str(tabs[0]["tab_id"])
+        else:
+            return (), None, None, None, None
+        try:
+            snapshot = await self._call(
+                "get_browser_state",
+                {
+                    "target_id": target_id,
+                    "tab_id": tab_id,
+                    "snapshot_format": "semantic_v2",
+                },
+            )
+        except Exception:
+            return (), None, None, None, None
+        if snapshot.get("status") != "ok":
+            return (), None, None, None, None
+        refs = snapshot.get("refs")
+        browser_elements: list[Element] = []
+        if isinstance(refs, list):
+            for offset, raw in enumerate(refs):
+                if not isinstance(raw, Mapping):
+                    continue
+                ref = raw.get("ref")
+                if not isinstance(ref, str) or not ref:
+                    continue
+                states = raw.get("states")
+                disabled = (
+                    states.get("disabled") is True
+                    if isinstance(states, Mapping)
+                    else False
+                )
+                actions_raw = raw.get("actions") or []
+                actions = tuple(
+                    str(action)
+                    for action in actions_raw
+                    if isinstance(action, str)
+                )
+                browser_elements.append(
+                    Element(
+                        index=100_000 + offset,
+                        token=None,
+                        role=str(raw.get("role") or "browser-control"),
+                        label=str(raw.get("name") or ""),
+                        enabled=not disabled,
+                        value=(
+                            str(raw["value"])
+                            if raw.get("value") is not None
+                            else None
+                        ),
+                        actions=actions,
+                        bounds=None,
+                        source="browser",
+                        browser_ref=ref,
+                    )
+                )
+        page = snapshot.get("page")
+        url = (
+            str(page.get("url"))
+            if isinstance(page, Mapping) and page.get("url")
+            else None
+        )
+        title = (
+            str(page.get("title"))
+            if isinstance(page, Mapping) and page.get("title")
+            else None
+        )
+        return (
+            tuple(browser_elements),
+            target_id,
+            tab_id,
+            url,
+            title,
+        )
+
     async def observe(self, app: str | None = None) -> Observation:
         window = self._choose_window(await self.list_windows(), app)
         pid = int(window["pid"])
@@ -467,6 +583,30 @@ class CuaMcpDriver:
                     bounds=_rect(raw.get("frame")),
                 )
             )
+        (
+            browser_elements,
+            browser_target_id,
+            browser_tab_id,
+            browser_url,
+            browser_title,
+        ) = await self._browser_semantic_state(pid, window_id)
+        if browser_elements:
+            semantic_keys = {
+                (item.role.casefold(), item.label.casefold())
+                for item in browser_elements
+                if item.label
+            }
+            elements = [
+                item
+                for item in elements
+                if (
+                    item.role.casefold(),
+                    item.label.casefold(),
+                )
+                not in semantic_keys
+            ]
+            elements.extend(browser_elements)
+
         screenshot_path = state.get("screenshot_file_path")
         if (
             not isinstance(screenshot_path, str)
@@ -537,6 +677,10 @@ class CuaMcpDriver:
             screenshot_error=_screenshot_error(state),
             degraded=bool(state.get("degraded", False)),
             truncated=bool(state.get("truncated", False)),
+            browser_target_id=browser_target_id,
+            browser_tab_id=browser_tab_id,
+            browser_url=browser_url,
+            browser_title=browser_title,
         )
 
     def _compatible_arguments(
