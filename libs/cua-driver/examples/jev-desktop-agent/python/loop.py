@@ -231,6 +231,8 @@ class AgentLoop:
             no_progress = 0
             reobserve_count = 0
             low_confidence_count = 0
+            force_visual_observation = False
+            reobserved_fingerprints: set[str] = set()
             done_refuted_fingerprint: str | None = None
             refuted_action_signatures: set[tuple[str | None, str]] = set()
             last_candidate_id: str | None = None
@@ -268,10 +270,18 @@ class AgentLoop:
                     await self._driver.ensure_app(target_app)
                     self._progress(f"{target_app} is available.")
 
-                self._progress(
-                    f"Observing {target_app or 'current desktop window'}..."
+                include_screenshot = (
+                    not direct_mode or force_visual_observation
                 )
-                observation = await self._driver.observe(target_app)
+                self._progress(
+                    f"Observing {target_app or 'current desktop window'}"
+                    + (" with screenshot..." if include_screenshot else "...")
+                )
+                observation = await self._driver.observe(
+                    target_app,
+                    include_screenshot=include_screenshot,
+                )
+                force_visual_observation = False
                 self._progress("Grounding current state...")
                 observation = await self._perceiver.enrich(
                     current.goal,
@@ -290,6 +300,7 @@ class AgentLoop:
                         observation=observation,
                     )
 
+                observation_fingerprint = observation.fingerprint()
                 candidates = build_candidates(
                     current.goal,
                     observation,
@@ -303,7 +314,7 @@ class AgentLoop:
                 )
                 if (
                     done_refuted_fingerprint is not None
-                    and done_refuted_fingerprint == observation.fingerprint()
+                    and done_refuted_fingerprint == observation_fingerprint
                 ):
                     candidates = [
                         candidate
@@ -314,6 +325,19 @@ class AgentLoop:
                         "Completion was already refuted on this exact state; "
                         "temporarily suppressing the done candidate."
                     )
+                if observation_fingerprint in reobserved_fingerprints:
+                    before_count = len(candidates)
+                    candidates = [
+                        candidate
+                        for candidate in candidates
+                        if candidate.id != REOBSERVE
+                    ]
+                    if len(candidates) != before_count:
+                        self._progress(
+                            "Fresh observation is semantically unchanged; "
+                            "suppressing reobserve so Jev must choose an action, "
+                            "done, or abstain."
+                        )
                 if refuted_action_signatures:
                     before_count = len(candidates)
                     candidates = [
@@ -392,11 +416,31 @@ class AgentLoop:
                         )
                     )
                     if low_confidence_count < 2:
-                        self._progress(
-                            "Decision is ambiguous; re-observing once before "
-                            "spending a planner repair call."
-                        )
+                        if direct_mode:
+                            force_visual_observation = True
+                            self._progress(
+                                "Decision is ambiguous; doing one richer "
+                                "observation before deciding again."
+                            )
+                        else:
+                            self._progress(
+                                "Decision is ambiguous; re-observing once before "
+                                "spending a planner repair call."
+                            )
                         continue
+                    if direct_mode:
+                        result = RunResult(
+                            "uncertain",
+                            tuple(history),
+                            (
+                                "Direct-mode decision remained ambiguous after "
+                                "one richer re-observation."
+                            ),
+                            plan,
+                            completed_subgoals,
+                        )
+                        self._remember(goal, result)
+                        return result
                     if repairs < self._max_repairs:
                         self._progress(
                             "Decision stayed ambiguous; asking planner to repair "
@@ -470,6 +514,7 @@ class AgentLoop:
                 if candidate.id == REOBSERVE:
                     self._progress("Jev requested a fresh observation.")
                     reobserve_count += 1
+                    reobserved_fingerprints.add(observation_fingerprint)
                     history.append(
                         StepRecord(
                             global_step,
@@ -482,6 +527,13 @@ class AgentLoop:
                             "reobserve",
                         )
                     )
+                    if direct_mode:
+                        force_visual_observation = True
+                        self._progress(
+                            "Direct mode allows one reobserve for this state; "
+                            "the next unchanged state will suppress reobserve."
+                        )
+                        continue
                     if (
                         reobserve_count >= 2
                         and repairs < self._max_repairs
@@ -511,7 +563,7 @@ class AgentLoop:
                             "abstained",
                         )
                     )
-                    if repairs < self._max_repairs:
+                    if not direct_mode and repairs < self._max_repairs:
                         current = await self._planner.repair_step(
                             original_goal=goal,
                             current=current,
