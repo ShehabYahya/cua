@@ -7,7 +7,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from contracts import Decision, Element, Observation, Plan, PlanStep, Verification
+from contracts import (
+    Decision,
+    DriverRefusal,
+    Element,
+    Observation,
+    Plan,
+    PlanStep,
+    Verification,
+)
 from loop import AgentLoop
 
 
@@ -26,6 +34,9 @@ class FakeDriver:
         return True
 
     async def ensure_app(self, app):
+        return None
+
+    async def revive_session(self):
         return None
 
     async def observe(self, app=None):
@@ -102,7 +113,7 @@ class LoopTest(unittest.TestCase):
         self.assertIn("Subgoal 1/1", joined)
         self.assertIn("asking Jev", joined)
         self.assertIn("Executing:", joined)
-        self.assertIn("Verifying subgoal completion", joined)
+        self.assertIn("Verifier: done", joined)
         self.assertIn("All planned subgoals completed", joined)
 
     def test_execute_reobserve_verify_completes(self):
@@ -298,6 +309,46 @@ class LoopTest(unittest.TestCase):
             "Suppressing 1 route(s)",
             "\n".join(messages),
         )
+
+    def test_session_ended_is_revived_and_reobserved(self):
+        class SessionDriver(FakeDriver):
+            def __init__(self):
+                super().__init__()
+                self.revived = 0
+                self.failed_once = False
+
+            async def execute(self, candidate):
+                if not self.failed_once:
+                    self.failed_once = True
+                    raise DriverRefusal(
+                        candidate.tool or "click",
+                        "this session has ended",
+                        code="session_ended",
+                    )
+                self.executed.append(candidate.id)
+                return {"effect": "confirmed"}
+
+            async def revive_session(self):
+                self.revived += 1
+
+        class RetryChooser:
+            async def choose(self, *, candidates, history, **kwargs):
+                if any(item.executed for item in history):
+                    return Decision("done", 0.99, {"done": 0.99})
+                return Decision("click-1", 0.99, {"click-1": 0.99})
+
+        driver = SessionDriver()
+        agent = AgentLoop(
+            driver,
+            RetryChooser(),
+            planner=FakePlanner(),
+            verifier=FakeVerifier(),
+            max_steps=5,
+        )
+        result = asyncio.run(agent.run("open new tab", act=True))
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(driver.revived, 1)
+        self.assertEqual(driver.executed, ["click-1"])
 
     def test_dry_run_never_executes(self):
         driver = FakeDriver()
