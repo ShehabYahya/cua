@@ -20,6 +20,7 @@ DENY_FIELD_WORDS = {
 
 CONFIRM_WORDS = {
     "send",
+    "download",
     "submit",
     "publish",
     "post",
