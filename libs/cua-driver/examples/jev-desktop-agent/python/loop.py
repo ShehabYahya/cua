@@ -672,9 +672,41 @@ class AgentLoop:
                             "Background delivery was unavailable; retrying the same "
                             "action with authorized foreground delivery..."
                         )
-                        action_result = await self._driver.execute(
-                            executed_candidate
-                        )
+                        try:
+                            action_result = await self._driver.execute(
+                                executed_candidate
+                            )
+                        except DriverRefusal as foreground_refusal:
+                            if foreground_refusal.code == "session_ended":
+                                history.append(
+                                    StepRecord(
+                                        global_step,
+                                        subgoal_index,
+                                        observation.snapshot_id,
+                                        candidate.id,
+                                        candidate.description,
+                                        decision.confidence,
+                                        False,
+                                        "session_revived",
+                                        reason=foreground_refusal.reason,
+                                    )
+                                )
+                                self._progress(
+                                    "Foreground authorization ended the Driver "
+                                    "lifecycle session; reviving it and "
+                                    "re-observing before retrying."
+                                )
+                                await self._driver.revive_session()
+                                continue
+                            result = RunResult(
+                                "refused",
+                                tuple(history),
+                                str(foreground_refusal),
+                                plan,
+                                completed_subgoals,
+                            )
+                            self._remember(goal, result)
+                            return result
                     else:
                         history.append(
                             StepRecord(
