@@ -358,6 +358,54 @@ def build_candidates(
     action_limit = max_candidates - 3
     normalized_goal = goal.casefold()
 
+    # Keep intent-specific keyboard/scroll routes from being crowded out by
+    # large accessibility trees. These are often the most reliable recovery
+    # paths on browsers and native Wayland.
+    priority_extras = (
+        _hotkey_candidates(goal, observation)
+        + _scroll_candidates(goal, observation)
+    )
+    for extra in priority_extras[:8]:
+        if len(candidates) >= action_limit:
+            break
+        if extra.id not in {candidate.id for candidate in candidates}:
+            candidates.append(extra)
+
+    if (
+        prepared_texts
+        and any(
+            word in normalized_goal
+            for word in (
+                "type",
+                "write",
+                "enter",
+                "search",
+                "query",
+                "command",
+                "paste",
+            )
+        )
+        and not field_is_sensitive(goal)
+        and len(candidates) < action_limit
+    ):
+        slot = prepared_texts[0]
+        candidates.append(
+            Candidate(
+                id=f"type-focused-{slot.id}",
+                description=(
+                    f"Type prepared text {slot.id} into the currently "
+                    "focused editable control in the target window."
+                ),
+                tool="type_text",
+                arguments={
+                    **_window_target(observation),
+                    "text": slot.text,
+                },
+                snapshot_id=observation.snapshot_id,
+                source="keyboard",
+            )
+        )
+
     for element in elements:
         if len(candidates) >= action_limit:
             break
