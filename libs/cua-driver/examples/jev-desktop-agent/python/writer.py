@@ -93,12 +93,15 @@ class OpenRouterWriter:
         ][:20]
         if not editable:
             return tuple(slots)
-        generated = await asyncio.to_thread(
-            self._compose_sync,
-            original_goal,
-            step,
-            editable,
-        )
+        try:
+            generated = await asyncio.to_thread(
+                self._compose_sync,
+                original_goal,
+                step,
+                editable,
+            )
+        except Exception:
+            generated = None
         if generated:
             slots.append(PreparedText("text-1", generated, "writer"))
         return tuple(slots)
