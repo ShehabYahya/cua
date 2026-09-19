@@ -484,12 +484,17 @@ class CuaMcpDriver:
             f"launched {app!r}, but no matching window became visible"
         )
 
-    async def desktop_overview(self) -> DesktopOverview:
+    async def desktop_overview(
+        self,
+        *,
+        include_screenshot: bool = True,
+    ) -> DesktopOverview:
         windows = tuple(await self.list_windows())
         apps = tuple(await self.list_apps())
         screenshot_path = None
         if (
-            self.has_tool("get_desktop_state")
+            include_screenshot
+            and self.has_tool("get_desktop_state")
             and self._temp_dir
             and self.has_property("get_desktop_state", "screenshot_out_file")
         ):
