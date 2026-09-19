@@ -319,6 +319,7 @@ def build_candidates(
     prepared_texts: tuple[PreparedText, ...] = (),
     max_candidates: int = 32,
     allow_visual_clicks: bool = False,
+    download_root: str | None = None,
 ) -> list[Candidate]:
     if max_candidates < 4:
         raise ValueError("max_candidates must leave room for terminal candidates")
@@ -418,6 +419,32 @@ def build_candidates(
                         },
                         snapshot_id=observation.snapshot_id,
                         source="browser",
+                    )
+                )
+
+            if (
+                "click" in element.actions
+                and download_root
+                and "download" in normalized_goal
+                and len(candidates) < action_limit
+            ):
+                candidates.append(
+                    apply_risk(
+                        Candidate(
+                            id=f"browser-download-{element.index}",
+                            description=(
+                                f'Download from page {element.role} '
+                                f'"{element.label}" into the approved '
+                                "download directory."
+                            ),
+                            tool="browser_download",
+                            arguments={
+                                **browser_common,
+                                "destination_root": download_root,
+                            },
+                            snapshot_id=observation.snapshot_id,
+                            source="browser",
+                        )
                     )
                 )
 
