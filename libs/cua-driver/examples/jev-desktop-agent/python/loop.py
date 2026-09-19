@@ -19,7 +19,7 @@ from contracts import (
 )
 from perception import NoopPerceiver
 from planner import PassThroughPlanner
-from policy import classify_risk, field_is_sensitive
+from policy import classify_risk, sensitive_text_intent
 from resources import DownloadTracker
 from verifier import ConservativeVerifier, GoalVerifier, state_changed
 from writer import (
@@ -138,6 +138,24 @@ class AgentLoop:
         confirm: ConfirmationCallback | None = None,
         cancel_event=None,
     ) -> RunResult:
+        if sensitive_text_intent(goal):
+            plan = Plan(goal="<sensitive command>", steps=())
+            result = RunResult(
+                "blocked",
+                (),
+                (
+                    "Credential-like text entry is blocked before planning "
+                    "so the value is not sent to external models."
+                ),
+                plan,
+                0,
+            )
+            self._recent_context.append(
+                "A sensitive credential-entry command was blocked locally."
+            )
+            self._recent_context[:] = self._recent_context[-8:]
+            return result
+
         if cancel_event is not None and cancel_event.is_set():
             empty_plan = Plan(goal=goal, steps=())
             result = RunResult(
@@ -403,7 +421,7 @@ class AgentLoop:
                     )
                     if (
                         candidate.tool in {"type_text", "browser_type"}
-                        and field_is_sensitive(current.goal)
+                        and sensitive_text_intent(current.goal)
                     ):
                         candidate = replace(candidate, risk="deny")
                     elif contextual_risk == "confirm":
