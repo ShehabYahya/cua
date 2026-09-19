@@ -701,7 +701,6 @@ class CuaMcpDriver:
         }
         if include_screenshot:
             args["max_dimension"] = 1800
-        }
         proposed = None
         if (
             include_screenshot
