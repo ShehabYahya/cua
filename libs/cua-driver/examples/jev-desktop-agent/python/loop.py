@@ -189,13 +189,15 @@ class AgentLoop:
             self._remember(goal, result)
             return result
 
+        direct_mode = isinstance(self._planner, PassThroughPlanner)
         self._progress("Reading desktop state...")
-        desktop = await self._driver.desktop_overview()
+        desktop = await self._driver.desktop_overview(
+            include_screenshot=not direct_mode,
+        )
         self._progress(
             f"Desktop ready: {len(desktop.windows)} visible window(s), "
             f"{len(desktop.apps)} known app(s)."
         )
-        direct_mode = isinstance(self._planner, PassThroughPlanner)
         if direct_mode:
             self._progress("Direct mode: one goal, no planner model call.")
         else:
