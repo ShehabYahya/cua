@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Callable
 
 from candidates import build_candidates
 from contracts import (
@@ -54,6 +55,7 @@ class AgentLoop:
         min_confidence: float = 0.55,
         max_repairs_per_subgoal: int = 2,
         download_root: str | None = None,
+        progress: Callable[[str], None] | None = None,
     ) -> None:
         self._driver = driver
         self._chooser = chooser
@@ -69,6 +71,15 @@ class AgentLoop:
         self._download_tracker = DownloadTracker(download_root)
         self._recent_files: tuple[str, ...] = ()
         self._recent_context: list[str] = []
+        self._progress_callback = progress
+
+    def _progress(self, message: str) -> None:
+        if self._progress_callback is None:
+            return
+        try:
+            self._progress_callback(message)
+        except Exception:
+            pass
 
     @property
     def recent_context(self) -> tuple[str, ...]:
@@ -168,12 +179,19 @@ class AgentLoop:
             self._remember(goal, result)
             return result
 
+        self._progress("Reading desktop state...")
         desktop = await self._driver.desktop_overview()
+        self._progress(
+            f"Desktop ready: {len(desktop.windows)} visible window(s), "
+            f"{len(desktop.apps)} known app(s)."
+        )
+        self._progress("Planning task...")
         plan = await self._planner.plan(
             goal,
             desktop=desktop,
             recent_context=self.recent_context,
         )
+        self._progress(f"Plan ready: {len(plan.steps)} subgoal(s).")
         history: list[StepRecord] = []
         global_step = 0
         completed_subgoals = 0
@@ -183,6 +201,9 @@ class AgentLoop:
             start=1,
         ):
             current = planned_step
+            self._progress(
+                f"Subgoal {subgoal_index}/{len(plan.steps)}: {current.goal}"
+            )
             repairs = 0
             no_progress = 0
             reobserve_count = 0
@@ -217,14 +238,26 @@ class AgentLoop:
                         )
                         self._remember(goal, result)
                         return result
+                    self._progress(f"Launching {target_app}...")
                     await self._driver.ensure_app(target_app)
+                    self._progress(f"{target_app} is available.")
 
+                self._progress(
+                    f"Observing {target_app or 'current desktop window'}..."
+                )
                 observation = await self._driver.observe(target_app)
+                self._progress("Grounding current state...")
                 observation = await self._perceiver.enrich(
                     current.goal,
                     observation,
                 )
+                self._progress(
+                    f"Observed {observation.app} / {observation.window_title!r}: "
+                    f"{len(observation.elements)} semantic element(s), "
+                    f"{len(observation.visual_regions)} visual region(s)."
+                )
                 if prepared is None:
+                    self._progress("Preparing any requested text...")
                     prepared = await self._prepared_texts(
                         original_goal=goal,
                         step=current,
@@ -241,6 +274,9 @@ class AgentLoop:
                     recent_files=self._download_tracker.validate_recent(
                         self._recent_files
                     ),
+                )
+                self._progress(
+                    f"Built {len(candidates)} candidate action(s); asking Jev..."
                 )
                 decision_goal = redact_prepared_text(
                     current.goal,
@@ -259,6 +295,10 @@ class AgentLoop:
                     current_capture_id=observation.capture_id,
                 )
                 global_step += 1
+                self._progress(
+                    f"Jev selected {candidate.id} "
+                    f"({decision.confidence:.0%}): {candidate.description}"
+                )
 
                 if candidate.id == last_candidate_id:
                     repeat_count += 1
@@ -283,6 +323,7 @@ class AgentLoop:
                         )
                     )
                     if repairs < self._max_repairs:
+                        self._progress("Low confidence; asking planner to repair the subgoal...")
                         current = await self._planner.repair_step(
                             original_goal=goal,
                             current=current,
@@ -303,6 +344,7 @@ class AgentLoop:
                     return result
 
                 if candidate.id == DONE:
+                    self._progress("Jev says the subgoal is done; verifying independently...")
                     verification = await self._verification(
                         original_goal=goal,
                         step=current,
@@ -326,8 +368,16 @@ class AgentLoop:
                             reason=verification.reason,
                         )
                     )
+                    self._progress(
+                        f"Verifier: {'done' if verification.done else 'not done'} "
+                        f"({verification.confidence:.0%})"
+                        + (f" — {verification.reason}" if verification.reason else "")
+                    )
                     if verification.done:
                         completed_subgoals += 1
+                        self._progress(
+                            f"Subgoal {subgoal_index}/{len(plan.steps)} complete."
+                        )
                         break
                     if repairs < self._max_repairs:
                         current = await self._planner.repair_step(
@@ -353,6 +403,7 @@ class AgentLoop:
                     return result
 
                 if candidate.id == REOBSERVE:
+                    self._progress("Jev requested a fresh observation.")
                     reobserve_count += 1
                     history.append(
                         StepRecord(
@@ -382,6 +433,7 @@ class AgentLoop:
                     continue
 
                 if candidate.id == ABSTAIN:
+                    self._progress("Jev abstained from acting on the current state.")
                     history.append(
                         StepRecord(
                             global_step,
@@ -518,6 +570,7 @@ class AgentLoop:
 
                 files_before = self._download_tracker.snapshot()
                 executed_candidate: Candidate = candidate
+                self._progress(f"Executing: {candidate.description}")
                 try:
                     action_result = await self._driver.execute(
                         executed_candidate
@@ -529,6 +582,10 @@ class AgentLoop:
                     ):
                         executed_candidate = (
                             self._driver.with_foreground(candidate)
+                        )
+                        self._progress(
+                            "Background delivery was unavailable; retrying the same "
+                            "action with authorized foreground delivery..."
                         )
                         action_result = await self._driver.execute(
                             executed_candidate
@@ -588,6 +645,7 @@ class AgentLoop:
                     self._remember(goal, result)
                     return result
 
+                self._progress("Action returned; checking resulting state...")
                 file_wait = (
                     5.0
                     if (
@@ -620,6 +678,7 @@ class AgentLoop:
                     if isinstance(action_result, dict)
                     else None
                 )
+                self._progress("Re-observing after the action...")
                 after = await self._driver.observe(target_app)
                 after = await self._perceiver.enrich(
                     current.goal,
@@ -658,14 +717,26 @@ class AgentLoop:
                 self._recent_context.append(context_line)
                 self._recent_context[:] = self._recent_context[-8:]
 
+                self._progress(
+                    "State changed." if changed else "No semantic state change detected."
+                )
+                self._progress("Verifying subgoal completion...")
                 verification = await self._verification(
                     original_goal=goal,
                     step=current,
                     observation=after,
                     history=history,
                 )
+                self._progress(
+                    f"Verifier: {'done' if verification.done else 'not done'} "
+                    f"({verification.confidence:.0%})"
+                    + (f" — {verification.reason}" if verification.reason else "")
+                )
                 if verification.done:
                     completed_subgoals += 1
+                    self._progress(
+                        f"Subgoal {subgoal_index}/{len(plan.steps)} complete."
+                    )
                     break
 
                 no_progress = 0 if changed else no_progress + 1
@@ -705,6 +776,7 @@ class AgentLoop:
                 self._remember(goal, result)
                 return result
 
+        self._progress("All planned subgoals completed.")
         result = RunResult(
             "completed",
             tuple(history),
