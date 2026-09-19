@@ -17,6 +17,7 @@ from contracts import (
     Verification,
 )
 from loop import AgentLoop
+from planner import PassThroughPlanner
 
 
 class FakeDriver:
@@ -349,6 +350,86 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(driver.revived, 1)
         self.assertEqual(driver.executed, ["click-1"])
+
+    def test_direct_mode_allows_only_one_reobserve_per_unchanged_state(self):
+        class StableDriver(FakeDriver):
+            def __init__(self):
+                super().__init__()
+                self.screenshot_flags = []
+                self.clicked = False
+
+            async def observe(
+                self,
+                app=None,
+                *,
+                include_screenshot=True,
+            ):
+                self.counter += 1
+                self.screenshot_flags.append(include_screenshot)
+                return Observation(
+                    f"s{self.counter}",
+                    7,
+                    9,
+                    "Firefox",
+                    "Firefox",
+                    (
+                        Element(
+                            1,
+                            f"s{self.counter}:1",
+                            "push button",
+                            "New Tab",
+                            actions=("click",),
+                        ),
+                    ),
+                )
+
+            async def execute(self, candidate):
+                self.executed.append(candidate.id)
+                self.clicked = True
+                return {"effect": "confirmed"}
+
+        class ReobserveThenActChooser:
+            async def choose(self, *, candidates, **kwargs):
+                ids = {candidate.id for candidate in candidates}
+                if "reobserve" in ids:
+                    return Decision(
+                        "reobserve",
+                        0.90,
+                        {"reobserve": 0.90},
+                    )
+                return Decision(
+                    "click-1",
+                    0.90,
+                    {"click-1": 0.90},
+                )
+
+        class ClickVerifier:
+            def __init__(self, driver):
+                self.driver = driver
+
+            async def verify(self, **kwargs):
+                return Verification(
+                    self.driver.clicked,
+                    0.99 if self.driver.clicked else 0.1,
+                    "clicked" if self.driver.clicked else "not clicked",
+                )
+
+        driver = StableDriver()
+        agent = AgentLoop(
+            driver,
+            ReobserveThenActChooser(),
+            planner=PassThroughPlanner(),
+            verifier=ClickVerifier(driver),
+            max_steps=4,
+        )
+        result = asyncio.run(agent.run("open a new tab", act=True))
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(driver.executed, ["click-1"])
+        self.assertEqual(driver.screenshot_flags[:2], [False, True])
+        self.assertEqual(
+            [item.selected_id for item in result.steps[:1]],
+            ["reobserve"],
+        )
 
     def test_dry_run_never_executes(self):
         driver = FakeDriver()
