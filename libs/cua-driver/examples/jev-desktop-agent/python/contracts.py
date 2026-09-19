@@ -28,10 +28,18 @@ def thaw(value: Any) -> Any:
 
 
 class DriverRefusal(RuntimeError):
-    def __init__(self, tool: str, reason: str, *, recommended: str | None = None) -> None:
+    def __init__(
+        self,
+        tool: str,
+        reason: str,
+        *,
+        code: str | None = None,
+        recommended: str | None = None,
+    ) -> None:
         super().__init__(f"{tool} refused: {reason}")
         self.tool = tool
         self.reason = reason
+        self.code = code
         self.recommended = recommended
 
 
@@ -290,6 +298,8 @@ class DesktopDriver(Protocol):
     async def has_window(self, app: str) -> bool: ...
 
     async def ensure_app(self, app: str) -> None: ...
+
+    async def revive_session(self) -> None: ...
 
     async def observe(self, app: str | None = None) -> Observation: ...
 
