@@ -255,6 +255,46 @@ class CuaMcpDriver:
             data["__inline_images"] = inline_images
         return data
 
+    def capability_summary(self) -> dict[str, Any]:
+        names = set(self._tool_schemas)
+        return {
+            "native_observation": {
+                "list_windows": "list_windows" in names,
+                "get_window_state": "get_window_state" in names,
+                "get_desktop_state": "get_desktop_state" in names,
+            },
+            "native_actions": {
+                name: name in names
+                for name in (
+                    "click",
+                    "double_click",
+                    "right_click",
+                    "type_text",
+                    "press_key",
+                    "hotkey",
+                    "scroll",
+                    "drag",
+                )
+            },
+            "browser": {
+                name: name in names
+                for name in (
+                    "get_browser_state",
+                    "browser_click",
+                    "browser_type",
+                    "browser_pointer",
+                    "browser_download",
+                    "browser_set_input_files",
+                    "browser_navigate",
+                )
+            },
+            "perception": {
+                "parse_visual_regions": "parse_visual_regions" in names,
+                "capture_bound_click": self.capture_bound_click,
+            },
+            "health_report": "health_report" in names,
+        }
+
     async def health_warnings(self) -> tuple[str, ...]:
         warnings: list[str] = []
         if not self.has_tool("health_report"):
