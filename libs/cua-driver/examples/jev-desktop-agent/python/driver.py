@@ -488,9 +488,10 @@ class CuaMcpDriver:
         self,
         *,
         include_screenshot: bool = True,
+        include_apps: bool = True,
     ) -> DesktopOverview:
         windows = tuple(await self.list_windows())
-        apps = tuple(await self.list_apps())
+        apps = tuple(await self.list_apps()) if include_apps else ()
         screenshot_path = None
         if (
             include_screenshot
