@@ -37,6 +37,8 @@ async def main_async(args: argparse.Namespace) -> int:
     except ValueError as error:
         raise SystemExit(str(error)) from None
 
+    run_error: Exception | None = None
+    result = None
     async with CuaMcpDriver() as driver:
         agent = AgentLoop(
             driver,
@@ -44,7 +46,16 @@ async def main_async(args: argparse.Namespace) -> int:
             max_steps=args.max_steps,
             min_confidence=args.min_confidence,
         )
-        result = await agent.run(args.goal, app=args.app, act=args.act)
+        try:
+            result = await agent.run(args.goal, app=args.app, act=args.act)
+        except Exception as error:
+            # Leave the MCP context normally so AnyIO does not wrap an ordinary
+            # agent error in a noisy TaskGroup ExceptionGroup.
+            run_error = error
+
+    if run_error is not None:
+        raise SystemExit(f"error: {run_error}") from None
+    assert result is not None
     print(
         json.dumps(
             {
