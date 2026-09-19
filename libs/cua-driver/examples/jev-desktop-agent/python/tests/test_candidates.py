@@ -47,6 +47,9 @@ class CandidateTest(unittest.TestCase):
         typed = next(c for c in candidates if c.id.startswith("type-2"))
         self.assertEqual(typed.arguments["text"], "Alan Turing")
         self.assertNotIn("Alan Turing", typed.description)
+        focused = next(c for c in candidates if c.id == "type-focused-text-1")
+        self.assertEqual(focused.arguments["text"], "Alan Turing")
+        self.assertEqual(focused.source, "keyboard")
 
     def test_capture_bound_visual_candidate(self):
         visual = (
