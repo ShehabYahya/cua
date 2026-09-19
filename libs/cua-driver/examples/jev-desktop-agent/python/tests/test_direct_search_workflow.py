@@ -62,7 +62,7 @@ class DirectSearchDriver:
     async def revive_session(self):
         self.revived += 1
 
-    async def observe(self, app=None):
+    async def observe(self, app=None, *, include_screenshot=True):
         self.counter += 1
         snapshot = f"s{self.counter}"
         if self.results:
