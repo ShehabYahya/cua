@@ -131,7 +131,20 @@ class AgentLoop:
         approve_consequential: bool = False,
         allow_foreground: bool = False,
         confirm: ConfirmationCallback | None = None,
+        cancel_event=None,
     ) -> RunResult:
+        if cancel_event is not None and cancel_event.is_set():
+            empty_plan = Plan(goal=goal, steps=())
+            result = RunResult(
+                "cancelled",
+                (),
+                "Cancelled before execution.",
+                empty_plan,
+                0,
+            )
+            self._remember(goal, result)
+            return result
+
         desktop = await self._driver.desktop_overview()
         plan = await self._planner.plan(
             goal,
@@ -155,6 +168,17 @@ class AgentLoop:
             prepared: tuple[PreparedText, ...] | None = None
 
             while global_step < self._max_steps:
+                if cancel_event is not None and cancel_event.is_set():
+                    result = RunResult(
+                        "cancelled",
+                        tuple(history),
+                        "Cancelled by the user.",
+                        plan,
+                        completed_subgoals,
+                    )
+                    self._remember(goal, result)
+                    return result
+
                 target_app = app or current.app
                 if (
                     target_app
@@ -449,6 +473,17 @@ class AgentLoop:
                         self._remember(goal, result)
                         return result
 
+                if cancel_event is not None and cancel_event.is_set():
+                    result = RunResult(
+                        "cancelled",
+                        tuple(history),
+                        "Cancelled by the user before the next action.",
+                        plan,
+                        completed_subgoals,
+                    )
+                    self._remember(goal, result)
+                    return result
+
                 executed_candidate: Candidate = candidate
                 try:
                     action_result = await self._driver.execute(
@@ -496,6 +531,29 @@ class AgentLoop:
                         )
                         self._remember(goal, result)
                         return result
+
+                if cancel_event is not None and cancel_event.is_set():
+                    history.append(
+                        StepRecord(
+                            global_step,
+                            subgoal_index,
+                            observation.snapshot_id,
+                            candidate.id,
+                            candidate.description,
+                            decision.confidence,
+                            True,
+                            "cancelled_after_action",
+                        )
+                    )
+                    result = RunResult(
+                        "cancelled",
+                        tuple(history),
+                        "Cancelled by the user after the current action finished.",
+                        plan,
+                        completed_subgoals,
+                    )
+                    self._remember(goal, result)
+                    return result
 
                 effect = (
                     action_result.get("effect")
