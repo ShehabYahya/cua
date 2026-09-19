@@ -342,6 +342,7 @@ def build_candidates(
 
     candidates: list[Candidate] = []
     action_limit = max_candidates - 3
+    normalized_goal = goal.casefold()
 
     for element in elements:
         if len(candidates) >= action_limit:
@@ -358,6 +359,68 @@ def build_candidates(
                 "tab_id": observation.browser_tab_id,
                 "ref": element.browser_ref,
             }
+            pointer_requested = {
+                "right_click": (
+                    "right click" in normalized_goal
+                    or "context menu" in normalized_goal
+                ),
+                "double_click": "double click" in normalized_goal,
+                "hover": (
+                    "hover" in normalized_goal
+                    or "mouse over" in normalized_goal
+                ),
+            }
+            if "pointer" in element.actions:
+                for pointer_action, wanted in pointer_requested.items():
+                    if not wanted or len(candidates) >= action_limit:
+                        continue
+                    candidates.append(
+                        apply_risk(
+                            Candidate(
+                                id=(
+                                    f"browser-{pointer_action}-"
+                                    f"{element.index}"
+                                ),
+                                description=(
+                                    f"{pointer_action.replace('_', ' ').title()} "
+                                    f'page {element.role} "{element.label}".'
+                                ),
+                                tool="browser_pointer",
+                                arguments={
+                                    **browser_common,
+                                    "action": pointer_action,
+                                    "input_route": "dom_event",
+                                },
+                                snapshot_id=observation.snapshot_id,
+                                source="browser",
+                            )
+                        )
+                    )
+            if (
+                ("scroll" in element.actions or "pointer" in element.actions)
+                and "scroll" in normalized_goal
+                and len(candidates) < action_limit
+            ):
+                direction = -650 if "up" in normalized_goal else 650
+                candidates.append(
+                    Candidate(
+                        id=f"browser-scroll-{element.index}",
+                        description=(
+                            f'Scroll page region "{element.label}" '
+                            f'{"up" if direction < 0 else "down"}.'
+                        ),
+                        tool="browser_pointer",
+                        arguments={
+                            **browser_common,
+                            "action": "scroll",
+                            "delta_y": direction,
+                            "input_route": "dom_event",
+                        },
+                        snapshot_id=observation.snapshot_id,
+                        source="browser",
+                    )
+                )
+
             if "click" in element.actions:
                 candidates.append(
                     apply_risk(
@@ -421,7 +484,6 @@ def build_candidates(
                     )
                 )
             )
-            normalized_goal = goal.casefold()
             if "double click" in normalized_goal or (
                 "open" in normalized_goal
                 and _role_key(element.role) in {
@@ -515,6 +577,50 @@ def build_candidates(
                 source="keyboard",
             )
         )
+
+    if "drag" in normalized_goal and len(candidates) < action_limit:
+        pointer_elements = [
+            element
+            for element in elements
+            if (
+                element.source == "browser"
+                and element.browser_ref
+                and "pointer" in element.actions
+            )
+        ][:8]
+        for source in pointer_elements:
+            for destination in pointer_elements:
+                if source.index == destination.index:
+                    continue
+                if len(candidates) >= action_limit:
+                    break
+                candidates.append(
+                    apply_risk(
+                        Candidate(
+                            id=(
+                                f"browser-drag-{source.index}-"
+                                f"{destination.index}"
+                            ),
+                            description=(
+                                f'Drag page "{source.label}" to '
+                                f'"{destination.label}".'
+                            ),
+                            tool="browser_pointer",
+                            arguments={
+                                "target_id": observation.browser_target_id,
+                                "tab_id": observation.browser_tab_id,
+                                "ref": source.browser_ref,
+                                "destination_ref": destination.browser_ref,
+                                "action": "drag",
+                                "input_route": "dom_event",
+                            },
+                            snapshot_id=observation.snapshot_id,
+                            source="browser",
+                        )
+                    )
+                )
+            if len(candidates) >= action_limit:
+                break
 
     for extra in (
         _hotkey_candidates(goal, observation)
