@@ -60,6 +60,9 @@ fresh observation --> postcondition verifier --> next step / next subgoal
 - Desktop overview: apps, windows, and primary-desktop screenshot when Driver can
   prove/capture it.
 - Automatic app launch for planner-selected applications.
+- Runtime preflight diagnostics through `--check`, including Driver health,
+  visible-window/app counts, visual/capture capabilities, and GNOME Wayland
+  remediation hints.
 - Per-window **accessibility + screenshot** observation on every step.
 - Correct AT-SPI role handling including `push button`, `page tab`, `entry`,
   menu/list/radio/check controls, and action-advertising widgets.
@@ -92,6 +95,12 @@ fresh observation --> postcondition verifier --> next step / next subgoal
 - Explicit foreground escalation gate: foreground is used only after Driver asks
   for it and only with `--allow-foreground`.
 - In-process conversational context for follow-ups during voice sessions.
+- Bounded local download-resource memory: only the approved download directory
+  (default `~/Downloads`) is watched, recursively to two levels, without reading
+  file contents. Newly downloaded/renamed files can be handed back to exact
+  `browser_set_input_files` refs without exposing absolute paths to Jev.
+- Typed browser downloads to an approved directory and typed browser uploads of
+  recently observed local files, both behind the consequential-action gate.
 - Voice mode with VAD microphone capture, OpenRouter transcription, spoken
   confirmation of consequential actions, and optional local TTS.
 
@@ -155,6 +164,19 @@ export JEV_DESKTOP_WRITER_MODEL='openrouter/auto'
 export JEV_DESKTOP_STT_MODEL='openai/whisper-1'
 ```
 
+## Preflight
+
+Before the first live run:
+
+```bash
+uv run python/cli.py --check
+```
+
+A healthy setup reports the advertised native/browser/perception capabilities
+and whether Driver can see windows/apps and capture the desktop. On GNOME
+Wayland, a degraded result normally points directly at Driver upgrade or the
+WinRects helper.
+
 ## Tests
 
 ```bash
@@ -189,6 +211,13 @@ uv run python/cli.py \
 `--allow-foreground` does **not** force foreground input. The harness always tries
 Driver's background route first and uses foreground only if Driver explicitly
 returns a foreground escalation.
+
+For typed browser downloads the harness uses `~/Downloads` when it exists. Set
+a different already-existing approved directory with:
+
+```bash
+--download-root /absolute/path/to/downloads
+```
 
 Consequential actions stop for confirmation by default. For a trusted scripted
 run you can pre-authorize that policy gate with:
