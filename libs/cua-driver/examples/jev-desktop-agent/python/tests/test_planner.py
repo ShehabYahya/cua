@@ -82,6 +82,25 @@ class PlannerTest(unittest.TestCase):
         )
 
 
+    def test_direct_mode_does_not_bind_to_mutable_firefox_tab_title(self):
+        planner = PassThroughPlanner()
+        plan = asyncio.run(
+            planner.plan(
+                "Open Firefox, open a new tab, search for Alan Turing",
+                desktop=DesktopOverview(
+                    windows=(
+                        {
+                            "app_name": "Jesse Model Analysis — Mozilla Firefox",
+                            "title": "Jesse Model Analysis — Mozilla Firefox",
+                        },
+                    ),
+                    apps=(),
+                ),
+            )
+        )
+        self.assertEqual(plan.steps[0].app, "Firefox")
+
+
     def test_direct_mode_infers_firefox_without_model(self):
         planner = PassThroughPlanner()
         plan = asyncio.run(
