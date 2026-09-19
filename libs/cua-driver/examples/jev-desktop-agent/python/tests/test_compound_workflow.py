@@ -67,7 +67,7 @@ class CompoundDriver:
         self.sent = False
         self.counter = 0
 
-    async def desktop_overview(self, *, include_screenshot=True):
+    async def desktop_overview(self, *, include_screenshot=True, include_apps=True):
         return DesktopOverview((), ())
 
     async def has_window(self, app):
