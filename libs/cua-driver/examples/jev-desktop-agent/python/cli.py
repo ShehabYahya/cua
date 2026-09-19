@@ -32,6 +32,11 @@ def parser() -> argparse.ArgumentParser:
         help="natural-language desktop goal",
     )
     result.add_argument(
+        "--check",
+        action="store_true",
+        help="run Cua desktop-agent preflight without requiring model credentials",
+    )
+    result.add_argument(
         "--app",
         help="override the planner and target a matching app/window",
     )
@@ -154,8 +159,23 @@ def _result_json(result: RunResult) -> dict:
 
 
 async def main_async(args: argparse.Namespace) -> int:
+    if args.check:
+        async with CuaMcpDriver() as driver:
+            warnings = await driver.health_warnings()
+            overview = await driver.desktop_overview()
+            payload = {
+                "status": "ok" if not warnings else "degraded",
+                "warnings": list(warnings),
+                "capabilities": driver.capability_summary(),
+                "visible_windows": len(overview.windows),
+                "known_apps": len(overview.apps),
+                "desktop_screenshot": bool(overview.screenshot_path),
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0 if not warnings else 2
+
     if not args.voice and not args.goal:
-        raise SystemExit("provide a goal or use --voice")
+        raise SystemExit("provide a goal, use --voice, or use --check")
     try:
         chooser = HierarchicalChooser(
             chooser_from_env(args.provider),
