@@ -32,8 +32,16 @@ class DownloadTracker:
     without exposing the absolute path to Jev.
     """
 
-    def __init__(self, root: str | None) -> None:
+    def __init__(
+        self,
+        root: str | None,
+        *,
+        max_depth: int = 2,
+        max_files: int = 2000,
+    ) -> None:
         self.root: Path | None = None
+        self.max_depth = max(0, max_depth)
+        self.max_files = max(1, max_files)
         if root:
             candidate = Path(root).expanduser()
             try:
@@ -58,30 +66,44 @@ class DownloadTracker:
         if root is None:
             return {}
         out: dict[str, FileStamp] = {}
-        try:
-            children = list(root.iterdir())
-        except OSError:
-            return {}
-        for path in children:
-            if not self._acceptable(path):
-                continue
+        stack: list[tuple[Path, int]] = [(root, 0)]
+        while stack and len(out) < self.max_files:
+            directory, depth = stack.pop()
             try:
-                stat = path.stat()
-                resolved = path.resolve(strict=True)
-            except (OSError, RuntimeError):
+                children = list(directory.iterdir())
+            except OSError:
                 continue
-            try:
-                resolved.relative_to(root)
-            except ValueError:
-                continue
-            stamp = FileStamp(
-                path=str(resolved),
-                name=resolved.name,
-                inode=int(getattr(stat, "st_ino", 0)),
-                size=int(stat.st_size),
-                mtime_ns=int(stat.st_mtime_ns),
-            )
-            out[stamp.path] = stamp
+            for path in children:
+                if len(out) >= self.max_files:
+                    break
+                try:
+                    if path.is_symlink():
+                        continue
+                    if path.is_dir():
+                        if (
+                            depth < self.max_depth
+                            and not path.name.startswith(".")
+                        ):
+                            stack.append((path, depth + 1))
+                        continue
+                except OSError:
+                    continue
+                if not self._acceptable(path):
+                    continue
+                try:
+                    stat = path.stat()
+                    resolved = path.resolve(strict=True)
+                    resolved.relative_to(root)
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                stamp = FileStamp(
+                    path=str(resolved),
+                    name=resolved.name,
+                    inode=int(getattr(stat, "st_ino", 0)),
+                    size=int(stat.st_size),
+                    mtime_ns=int(stat.st_mtime_ns),
+                )
+                out[stamp.path] = stamp
         return out
 
     @staticmethod
@@ -144,8 +166,11 @@ class DownloadTracker:
         for raw in paths:
             if len(valid) >= limit:
                 break
+            raw_path = Path(raw).expanduser()
             try:
-                path = Path(raw).resolve(strict=True)
+                if raw_path.is_symlink():
+                    continue
+                path = raw_path.resolve(strict=True)
                 path.relative_to(root)
             except (OSError, RuntimeError, ValueError):
                 continue
