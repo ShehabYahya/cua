@@ -180,10 +180,10 @@ class CuaMcpDriver:
             raise RuntimeError(
                 "CuaMcpDriver must be used as an async context manager"
             )
-        result = await self._session.call_tool(
-            name,
-            {**arguments, "session": self._label},
-        )
+        payload = dict(arguments)
+        if self.has_property(name, "session"):
+            payload["session"] = self._label
+        result = await self._session.call_tool(name, payload)
         data = result.structuredContent
         if isinstance(data, dict) and (
             data.get("status") == "refused" or data.get("refusal")
@@ -262,14 +262,33 @@ class CuaMcpDriver:
             None,
         )
         if match is None:
+            if not self.has_property("launch_app", "name"):
+                raise RuntimeError(
+                    f"Driver cannot launch {app!r} by name on this version"
+                )
             await self._call("launch_app", {"name": app})
         else:
             launch_path = match.get("launch_path")
-            args = (
-                {"launch_path": launch_path}
-                if isinstance(launch_path, str) and launch_path
-                else {"name": str(match.get("name") or app)}
-            )
+            bundle_id = match.get("bundle_id")
+            name = str(match.get("name") or app)
+            if (
+                isinstance(launch_path, str)
+                and launch_path
+                and self.has_property("launch_app", "launch_path")
+            ):
+                args = {"launch_path": launch_path}
+            elif (
+                isinstance(bundle_id, str)
+                and bundle_id
+                and self.has_property("launch_app", "bundle_id")
+            ):
+                args = {"bundle_id": bundle_id}
+            elif self.has_property("launch_app", "name"):
+                args = {"name": name}
+            else:
+                raise RuntimeError(
+                    f"Driver cannot launch {app!r} with its advertised schema"
+                )
             await self._call("launch_app", args)
         for _ in range(32):
             if await self.has_window(app):
@@ -499,16 +518,51 @@ class CuaMcpDriver:
             truncated=bool(state.get("truncated", False)),
         )
 
+    def _compatible_arguments(
+        self,
+        tool: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        schema = self._tool_schemas.get(tool) or {}
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return arguments
+
+        result = dict(arguments)
+        target = result.get("target")
+        if isinstance(target, Mapping) and "target" not in properties:
+            result.pop("target", None)
+            if target.get("kind") == "window":
+                if "pid" in properties and target.get("pid") is not None:
+                    result.setdefault("pid", target["pid"])
+                if (
+                    "window_id" in properties
+                    and target.get("window_id") is not None
+                ):
+                    result.setdefault("window_id", target["window_id"])
+            elif target.get("kind") == "desktop" and "scope" in properties:
+                result.setdefault("scope", "desktop")
+
+        # Candidates may carry both modern tokens and legacy snapshot/index
+        # addresses. Keep only fields this exact Driver advertises.
+        result = {
+            key: value
+            for key, value in result.items()
+            if key in properties
+        }
+        return result
+
     async def execute(
         self,
         candidate: Candidate,
     ) -> Mapping[str, Any]:
         if candidate.tool is None:
             raise ValueError("terminal candidates are not executable")
-        return await self._call(
+        arguments = self._compatible_arguments(
             candidate.tool,
             thaw(candidate.arguments),
         )
+        return await self._call(candidate.tool, arguments)
 
     def with_foreground(self, candidate: Candidate) -> Candidate:
         if candidate.tool is None:
