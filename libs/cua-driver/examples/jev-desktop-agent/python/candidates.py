@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from contracts import ABSTAIN, DONE, REOBSERVE, Candidate, Element, Observation, VisualRegion
 from policy import apply_risk, field_is_sensitive
@@ -320,6 +321,7 @@ def build_candidates(
     max_candidates: int = 32,
     allow_visual_clicks: bool = False,
     download_root: str | None = None,
+    recent_files: tuple[str, ...] = (),
 ) -> list[Candidate]:
     if max_candidates < 4:
         raise ValueError("max_candidates must leave room for terminal candidates")
@@ -466,6 +468,41 @@ def build_candidates(
                         )
                     )
                 )
+            if (
+                "upload" in element.actions
+                and recent_files
+                and any(
+                    word in normalized_goal
+                    for word in ("attach", "upload", "file", "document", "pdf")
+                )
+            ):
+                for file_index, file_path in enumerate(recent_files[:4], start=1):
+                    if len(candidates) >= action_limit:
+                        break
+                    name = Path(file_path).name
+                    candidates.append(
+                        apply_risk(
+                            Candidate(
+                                id=(
+                                    f"browser-upload-{element.index}-"
+                                    f"{file_index}"
+                                ),
+                                description=(
+                                    f'Attach recent local file "{name}" '
+                                    f'using page {element.role} '
+                                    f'"{element.label}".'
+                                ),
+                                tool="browser_set_input_files",
+                                arguments={
+                                    **browser_common,
+                                    "files": [file_path],
+                                },
+                                snapshot_id=observation.snapshot_id,
+                                source="browser",
+                            )
+                        )
+                    )
+
             if (
                 "type" in element.actions
                 and prepared_texts
