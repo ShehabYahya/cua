@@ -20,8 +20,17 @@ DENY_FIELD_WORDS = {
 
 CONFIRM_WORDS = {
     "send",
+    "submit",
     "publish",
     "post",
+    "upload",
+    "attach",
+    "share",
+    "authorize",
+    "approve",
+    "follow",
+    "like",
+    "subscribe",
     "delete",
     "remove",
     "trash",
