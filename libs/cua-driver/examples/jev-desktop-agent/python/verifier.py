@@ -42,7 +42,22 @@ def local_verification(
     step: PlanStep,
     observation: Observation,
 ) -> Verification | None:
-    if step.text:
+    completion = (step.completion or step.goal).casefold()
+
+    text_readback_completion = any(
+        marker in completion
+        for marker in (
+            "contains the text",
+            "contains text",
+            "text appears",
+            "text is visible",
+            "address bar contains",
+            "search bar contains",
+            "field contains",
+            "input contains",
+        )
+    )
+    if step.text and text_readback_completion:
         wanted = step.text.casefold().strip()
         if wanted:
             for element in observation.elements:
@@ -56,7 +71,6 @@ def local_verification(
                         "semantic field readback contains the requested text",
                     )
 
-    completion = (step.completion or step.goal).casefold()
     if (
         "search result" not in completion
         and re.search(r"\bnew(?:\s+\w+){0,2}\s+tab\b", completion)
