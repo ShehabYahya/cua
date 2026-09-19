@@ -35,7 +35,7 @@ def _role_key(role: str) -> str:
     return re.sub(r"[^a-z]", "", role.casefold())
 
 
-def _local_verification(
+def local_verification(
     *,
     original_goal: str,
     step: PlanStep,
@@ -122,7 +122,7 @@ class OpenRouterVerifier:
     ) -> Verification:
         import asyncio
 
-        local = _local_verification(
+        local = local_verification(
             original_goal=original_goal,
             step=step,
             observation=observation,
