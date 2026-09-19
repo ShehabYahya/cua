@@ -589,6 +589,15 @@ class AgentLoop:
                     )
                 )
 
+                context_line = (
+                    f"Worked in {after.app} / {after.window_title!r}: "
+                    f"{candidate.description} "
+                    f"Resulting page/window: "
+                    f"{after.browser_title or after.window_title!r}."
+                )
+                self._recent_context.append(context_line)
+                self._recent_context[:] = self._recent_context[-8:]
+
                 verification = await self._verification(
                     original_goal=goal,
                     step=current,
