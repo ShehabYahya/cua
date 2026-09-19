@@ -57,7 +57,10 @@ def local_verification(
                     )
 
     completion = (step.completion or step.goal).casefold()
-    if re.search(r"\bnew(?:\s+\w+){0,2}\s+tab\b", completion):
+    if (
+        "search result" not in completion
+        and re.search(r"\bnew(?:\s+\w+){0,2}\s+tab\b", completion)
+    ):
         title = observation.window_title.casefold()
         if title.startswith("new tab") or "new tab - mozilla firefox" in title:
             return Verification(
