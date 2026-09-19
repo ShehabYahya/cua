@@ -6,6 +6,7 @@ from typing import Protocol
 
 from contracts import Observation, PlanStep, StepRecord, Verification
 from openrouter_client import DEFAULT_REASONING_MODEL, OpenRouterClient
+from writer import inferred_text_slots
 
 
 class GoalVerifier(Protocol):
@@ -80,6 +81,10 @@ def local_verification(
         quoted = re.findall(r"['\"]([^'\"]{2,120})['\"]", step.completion or "")
         if quoted:
             needle = quoted[-1].casefold()
+        else:
+            inferred = inferred_text_slots(original_goal, limit=1)
+            needle = inferred[0].text.casefold() if inferred else ""
+        if needle:
             haystacks = [
                 observation.window_title.casefold(),
                 (observation.browser_title or "").casefold(),
