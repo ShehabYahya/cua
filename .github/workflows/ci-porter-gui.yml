@@ -1,0 +1,61 @@
+name: "CI: Porter native GUI"
+
+on:
+  pull_request:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/ui/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_app.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/runtime.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/events.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
+      - ".github/workflows/ci-porter-gui.yml"
+  push:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/ui/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_app.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/runtime.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/events.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
+      - ".github/workflows/ci-porter-gui.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-porter-gui-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: libs/cua-driver/examples/jev-desktop-agent
+
+jobs:
+  qml-smoke:
+    name: Qt/QML shell smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.15"
+          enable-cache: true
+      - name: Install native GUI dependencies
+        run: uv sync --extra gui
+      - name: Compile Porter Python sources
+        run: uv run --extra gui python -m compileall -q python
+      - name: Load Aurora Dark QML offscreen
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          OPENROUTER_API_KEY: ""
+          TYPESAFE_API_KEY: ""
+        run: uv run --extra gui python python/porter_app.py --smoke-test
