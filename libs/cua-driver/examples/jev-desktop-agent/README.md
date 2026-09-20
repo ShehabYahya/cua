@@ -283,6 +283,61 @@ a different already-existing approved directory with:
 --download-root /absolute/path/to/downloads
 ```
 
+## Porter native GUI (Aurora Dark)
+
+The first native application shell is available through PySide6 + Qt Quick/QML.
+It does **not** run a local web server and does not embed HTML.
+
+Install the GUI extra:
+
+```bash
+uv sync --extra gui
+```
+
+Launch Porter:
+
+```bash
+uv run --extra gui python python/porter_app.py
+```
+
+The native shell currently provides:
+
+- an Aurora Dark main window wired to the real resident `PorterRuntime`;
+- a separate frameless compact command bar that is **not** forced always-on-top;
+- a Porter circular status ring;
+- live backend progress and command state;
+- direct text command submission and cancellation;
+- hide-on-close behavior for the main/compact windows;
+- a system tray/status icon when the desktop exposes one;
+- a resident backend that survives window hiding and owns Cua/Jev/OpenRouter
+  exactly once.
+
+The microphone control is intentionally a UI/state placeholder in this chunk.
+The next GUI chunk replaces it with the persistent hands-free VAD/STT service.
+
+For a headless QML load check:
+
+```bash
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+  uv run --extra gui python python/porter_app.py --smoke-test
+```
+
+The GUI architecture is:
+
+```text
+MainWindow.qml ──┐
+                 ├── PorterViewModel ── PorterRuntimeThread
+CompactBar.qml ──┘                         │
+                                           └── asyncio
+                                               ├── Cua Driver
+                                               ├── Jev
+                                               ├── OpenRouter
+                                               └── AgentLoop
+```
+
+Qt stays on the main thread. The existing asynchronous backend owns one
+dedicated worker-thread event loop for the application lifetime.
+
 ## Voice mode
 
 Start a continuous voice session:
