@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import platform
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -417,6 +419,35 @@ class PorterRuntime:
             allow_foreground=allow_foreground,
             silence_seconds=silence_seconds,
         )
+
+    async def diagnostics(self) -> dict[str, Any]:
+        """Return explicit on-demand diagnostics for the native Advanced page."""
+        if not self._started or self._driver is None:
+            raise RuntimeError("Porter runtime is not started")
+
+        warnings = await self._driver.health_warnings()
+        limitations = self._driver.capability_limitations()
+        overview = await self._driver.desktop_overview(
+            include_screenshot=False,
+            include_apps=True,
+        )
+        return {
+            "status": "ok" if not warnings else "degraded",
+            "warnings": list(warnings),
+            "limitations": list(limitations),
+            "capabilities": self._driver.capability_summary(),
+            "visible_windows": len(overview.windows),
+            "known_apps": len(overview.apps),
+            "provider": self.config.provider,
+            "jev_model": self.config.jev_model,
+            "vision_enabled": self.config.vision_enabled,
+            "hands_free": self.hands_free_enabled,
+            "visual_click_mode": self.config.visual_click_mode,
+            "policy_enabled": self.config.enforce_policy,
+            "allow_foreground": self.config.allow_foreground,
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+        }
 
     @staticmethod
     async def preflight() -> dict[str, Any]:
