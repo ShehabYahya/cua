@@ -389,8 +389,8 @@ Install the resulting package with:
 sudo apt install ./dist/porter_0.1.0_amd64.deb
 ```
 
-The installed launcher is `/usr/bin/porter`, backed by
-`/opt/porter/porter`. Cua Driver is deliberately not vendored into Porter.
+The installed launcher is `/usr/bin/porter`, backed by the private executable
+in `/usr/libexec/porter/porter`. Cua Driver is deliberately not vendored into Porter.
 If it is missing, first-run setup and About & Updates can open the official Cua
 installation guide or, after an explicit confirmation, run Cua's official Linux
 installer. Existing installations can run `cua-driver doctor` or

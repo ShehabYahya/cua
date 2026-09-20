@@ -73,14 +73,14 @@ jobs:
           DEB="$(find dist -maxdepth 1 -name 'porter_0.1.0_*.deb' -print -quit)"
           test -n "$DEB"
           dpkg-deb --info "$DEB"
-          dpkg-deb --contents "$DEB"
-          dpkg-deb --contents "$DEB" | grep -q './opt/porter/porter'
-          dpkg-deb --contents "$DEB" | grep -q './usr/bin/porter'
-          dpkg-deb --contents "$DEB" | grep -q             './usr/share/applications/io.github.shehabyahya.Porter.desktop'
-          dpkg-deb --contents "$DEB" | grep -q             './usr/share/icons/hicolor/scalable/apps/io.github.shehabyahya.Porter.svg'
-          dpkg-deb --contents "$DEB" | grep -q             './usr/share/metainfo/io.github.shehabyahya.Porter.metainfo.xml'
-          dpkg-deb --contents "$DEB" | grep -q             './usr/share/doc/porter-desktop/copyright'
-          dpkg-deb --contents "$DEB" | grep -q             './usr/share/doc/porter-desktop/third-party-licenses.txt'
+          dpkg-deb --contents "$DEB" | tee /tmp/porter-package-contents.txt
+          grep -q './usr/libexec/porter/porter' /tmp/porter-package-contents.txt
+          grep -q './usr/bin/porter' /tmp/porter-package-contents.txt
+          grep -q './usr/share/applications/io.github.shehabyahya.Porter.desktop' /tmp/porter-package-contents.txt
+          grep -q './usr/share/icons/hicolor/scalable/apps/io.github.shehabyahya.Porter.svg' /tmp/porter-package-contents.txt
+          grep -q './usr/share/metainfo/io.github.shehabyahya.Porter.metainfo.xml' /tmp/porter-package-contents.txt
+          grep -q './usr/share/doc/porter-desktop/copyright' /tmp/porter-package-contents.txt
+          grep -q './usr/share/doc/porter-desktop/third-party-licenses.txt' /tmp/porter-package-contents.txt
           lintian --fail-on error "$DEB"
 
       - name: Smoke-test packaged executable
@@ -94,8 +94,8 @@ jobs:
           mkdir -p /tmp/porter-deb-check
           DEB="$(find dist -maxdepth 1 -name 'porter_0.1.0_*.deb' -print -quit)"
           dpkg-deb -x "$DEB" /tmp/porter-deb-check
-          /tmp/porter-deb-check/opt/porter/porter --version | grep -q '^Porter 0.1.0$'
-          /tmp/porter-deb-check/opt/porter/porter --smoke-test
+          /tmp/porter-deb-check/usr/libexec/porter/porter --version | grep -q '^Porter 0.1.0$'
+          /tmp/porter-deb-check/usr/libexec/porter/porter --smoke-test
 
       - name: Validate desktop and AppStream metadata
         run: |
@@ -117,7 +117,7 @@ jobs:
           sudo apt-get install -y --reinstall "$PWD/$DEB"
           test "$(porter --version)" = "Porter 0.1.0"
           sudo apt-get remove -y porter-desktop
-          test ! -e /opt/porter/porter
+          test ! -e /usr/libexec/porter/porter
           test ! -e /usr/bin/porter
           test ! -e /usr/share/applications/io.github.shehabyahya.Porter.desktop
 

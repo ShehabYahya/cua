@@ -47,13 +47,18 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
-install -Dm755 "$BIN" "$STAGE/opt/porter/porter"
+install -Dm755 "$BIN" "$STAGE/usr/libexec/porter/porter"
 install -Dm644   "$ROOT/packaging/linux/$APP_ID.desktop"   "$STAGE/usr/share/applications/$APP_ID.desktop"
 install -Dm644   "$ROOT/packaging/linux/$APP_ID.metainfo.xml"   "$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
 install -Dm644   "$ROOT/assets/porter-ring.svg"   "$STAGE/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
 install -Dm644 \
   "$ROOT/../../../../LICENSE.md" \
   "$STAGE/usr/share/doc/porter-desktop/copyright"
+gzip -9n <"$ROOT/packaging/linux/changelog" \
+  >"$STAGE/usr/share/doc/porter-desktop/changelog.gz"
+install -Dm644 \
+  "$ROOT/packaging/linux/porter-desktop.lintian-overrides" \
+  "$STAGE/usr/share/lintian/overrides/porter-desktop"
 uv run --extra app --extra deploy pip-licenses \
   --format=plain-vertical \
   --with-license-file \
@@ -64,7 +69,7 @@ uv run --extra app --extra deploy pip-licenses \
 install -d "$STAGE/usr/bin"
 cat >"$STAGE/usr/bin/porter" <<'EOF'
 #!/bin/sh
-exec /opt/porter/porter "$@"
+exec /usr/libexec/porter/porter "$@"
 EOF
 chmod 0755 "$STAGE/usr/bin/porter"
 
@@ -76,7 +81,7 @@ Section: utils
 Priority: optional
 Architecture: $ARCH
 Maintainer: Shehab Yahya <266881246+ShehabYahya@users.noreply.github.com>
-Depends: libegl1, libgl1, libportaudio2, libxkbcommon-x11-0, xdg-desktop-portal, curl
+Depends: curl, libc6, libegl1, libgl1, libportaudio2, libxkbcommon-x11-0, sensible-utils, xdg-desktop-portal
 Recommends: gnome-keyring, xdg-desktop-portal-gnome
 Homepage: https://github.com/ShehabYahya/cua
 Description: Porter resident AI desktop assistant

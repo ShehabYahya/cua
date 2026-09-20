@@ -129,8 +129,8 @@ jobs:
           DEB="$(find dist -maxdepth 1 -name 'porter_*.deb' -print -quit)"
           test -n "$DEB"
           dpkg-deb -x "$DEB" /tmp/porter-release-check
-          /tmp/porter-release-check/opt/porter/porter --version | grep -q "^Porter ${{ steps.version.outputs.version }}$"
-          /tmp/porter-release-check/opt/porter/porter --smoke-test
+          /tmp/porter-release-check/usr/libexec/porter/porter --version | grep -q "^Porter ${{ steps.version.outputs.version }}$"
+          /tmp/porter-release-check/usr/libexec/porter/porter --smoke-test
 
       - name: Upload release-build artifact
         uses: actions/upload-artifact@v4
