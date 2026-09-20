@@ -28,11 +28,22 @@ Item {
         anchors.fill: parent
         spacing: 18
 
-        Text {
-            text: "About & Updates"
-            color: "#F2F7FF"
-            font.pixelSize: 30
-            font.weight: Font.DemiBold
+        RowLayout {
+            Layout.fillWidth: true
+
+            Text {
+                text: "About & Updates"
+                color: "#F2F7FF"
+                font.pixelSize: 30
+                font.weight: Font.DemiBold
+            }
+
+            Item { Layout.fillWidth: true }
+
+            AuroraButton {
+                text: "Quit Porter"
+                onClicked: porter.requestQuit()
+            }
         }
 
         RowLayout {
