@@ -142,7 +142,7 @@ class CompoundWorkflowTest(unittest.TestCase):
             chooser,
             max_steps=4,
         )
-        result = asyncio.run(agent.run(GOAL, act=True))
+        result = asyncio.run(agent.run(GOAL, app="Chrome", act=True))
 
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.completed_subgoals, 1)
