@@ -123,7 +123,6 @@ class PorterRuntimeThread(QThread):
             runtime.submit(
                 text,
                 act=True,
-                allow_foreground=True,
             )
         )
         if future is None:
