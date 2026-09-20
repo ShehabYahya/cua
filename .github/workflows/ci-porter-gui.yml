@@ -85,6 +85,17 @@ jobs:
       - name: Install native GUI dependencies
         run: uv sync --extra gui
 
+      - name: Resolve Porter lockfile
+        run: uv lock
+
+      - name: Upload resolved lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: porter-uv-lock-${{ github.sha }}
+          path: libs/cua-driver/examples/jev-desktop-agent/uv.lock
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Compile Porter Python sources
         run: uv run --extra gui python -m compileall -q python
 
