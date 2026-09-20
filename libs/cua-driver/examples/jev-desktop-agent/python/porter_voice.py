@@ -131,7 +131,6 @@ class HandsFreeVoiceService:
             await self.runtime.submit(
                 text,
                 act=True,
-                allow_foreground=True,
             )
         except Exception as error:
             self.runtime.emit_event(
