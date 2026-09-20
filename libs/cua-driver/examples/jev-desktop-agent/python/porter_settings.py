@@ -1,0 +1,497 @@
+from __future__ import annotations
+
+import os
+import shlex
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, Callable
+
+from PySide6.QtCore import QObject, Property, QSettings, Signal, Slot
+
+from jev_adapter import OPENROUTER_MODEL
+from openrouter_client import DEFAULT_REASONING_MODEL, DEFAULT_STT_MODEL
+from porter_voice import HandsFreeVoiceConfig
+from runtime import PorterRuntimeConfig
+
+
+@dataclass(frozen=True)
+class PorterAppSettings:
+    provider: str = "auto"
+    jev_model: str = OPENROUTER_MODEL
+    vision_enabled: bool = True
+    vision_model: str = DEFAULT_REASONING_MODEL
+    writer_model: str = DEFAULT_REASONING_MODEL
+    stt_model: str = DEFAULT_STT_MODEL
+    voice_language: str = ""
+    voice_silence: float = 0.55
+    hands_free: bool = True
+    microphone_device: int | None = None
+    download_root: str = ""
+    confirm_actions: bool = False
+    allow_foreground: bool = True
+    visual_click_mode: str = "strict"
+    start_at_login: bool = False
+    max_steps: int = 30
+    max_candidates: int = 32
+
+    def runtime_config(self) -> PorterRuntimeConfig:
+        return PorterRuntimeConfig(
+            provider=self.provider,
+            jev_model=self.jev_model.strip() or None,
+            vision_enabled=self.vision_enabled,
+            vision_model=self.vision_model.strip() or DEFAULT_REASONING_MODEL,
+            writer_model=self.writer_model.strip() or DEFAULT_REASONING_MODEL,
+            max_steps=max(1, int(self.max_steps)),
+            max_candidates=max(4, min(32, int(self.max_candidates))),
+            download_root=self.download_root.strip() or None,
+            enforce_policy=self.confirm_actions,
+            allow_foreground=self.allow_foreground,
+            visual_click_mode=self.visual_click_mode,
+        )
+
+    def voice_config(self) -> HandsFreeVoiceConfig:
+        return HandsFreeVoiceConfig(
+            enabled=self.hands_free,
+            stt_model=self.stt_model.strip() or DEFAULT_STT_MODEL,
+            language=self.voice_language.strip() or None,
+            microphone_device=self.microphone_device,
+            silence_seconds=max(0.1, min(10.0, float(self.voice_silence))),
+        )
+
+
+class PorterSettingsStore:
+    """Persistent non-secret application settings backed by QSettings."""
+
+    def __init__(self, settings: QSettings | None = None) -> None:
+        self.settings = settings or QSettings()
+
+    @staticmethod
+    def _bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).casefold() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _int_or_none(value: Any) -> int | None:
+        if value in {None, "", -1, "-1"}:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def load(self) -> PorterAppSettings:
+        s = self.settings
+        visual = str(s.value("computer/visual_click_mode", "strict"))
+        if visual not in {"strict", "permissive"}:
+            visual = "strict"
+        provider = str(s.value("models/provider", "auto"))
+        if provider not in {"auto", "openrouter", "typesafe"}:
+            provider = "auto"
+
+        return PorterAppSettings(
+            provider=provider,
+            jev_model=str(s.value("models/jev_model", OPENROUTER_MODEL)),
+            vision_enabled=self._bool(
+                s.value("models/vision_enabled", True),
+                True,
+            ),
+            vision_model=str(
+                s.value("models/vision_model", DEFAULT_REASONING_MODEL)
+            ),
+            writer_model=str(
+                s.value("models/writer_model", DEFAULT_REASONING_MODEL)
+            ),
+            stt_model=str(s.value("voice/stt_model", DEFAULT_STT_MODEL)),
+            voice_language=str(s.value("voice/language", "")),
+            voice_silence=float(s.value("voice/silence", 0.55)),
+            hands_free=self._bool(s.value("voice/hands_free", True), True),
+            microphone_device=self._int_or_none(
+                s.value("voice/microphone_device", None)
+            ),
+            download_root=str(s.value("computer/download_root", "")),
+            confirm_actions=self._bool(
+                s.value("computer/confirm_actions", False),
+                False,
+            ),
+            allow_foreground=self._bool(
+                s.value("computer/allow_foreground", True),
+                True,
+            ),
+            visual_click_mode=visual,
+            start_at_login=self._bool(
+                s.value("general/start_at_login", False),
+                False,
+            ),
+            max_steps=int(s.value("advanced/max_steps", 30)),
+            max_candidates=int(s.value("advanced/max_candidates", 32)),
+        )
+
+    def save(self, value: PorterAppSettings) -> None:
+        s = self.settings
+        s.setValue("models/provider", value.provider)
+        s.setValue("models/jev_model", value.jev_model)
+        s.setValue("models/vision_enabled", value.vision_enabled)
+        s.setValue("models/vision_model", value.vision_model)
+        s.setValue("models/writer_model", value.writer_model)
+        s.setValue("voice/stt_model", value.stt_model)
+        s.setValue("voice/language", value.voice_language)
+        s.setValue("voice/silence", value.voice_silence)
+        s.setValue("voice/hands_free", value.hands_free)
+        s.setValue(
+            "voice/microphone_device",
+            -1 if value.microphone_device is None else value.microphone_device,
+        )
+        s.setValue("computer/download_root", value.download_root)
+        s.setValue("computer/confirm_actions", value.confirm_actions)
+        s.setValue("computer/allow_foreground", value.allow_foreground)
+        s.setValue("computer/visual_click_mode", value.visual_click_mode)
+        s.setValue("general/start_at_login", value.start_at_login)
+        s.setValue("advanced/max_steps", value.max_steps)
+        s.setValue("advanced/max_candidates", value.max_candidates)
+        s.sync()
+
+
+class SecretStore:
+    """Porter credentials stored through the OS keyring, never QSettings."""
+
+    SERVICE = "Porter"
+    OPENROUTER = "OPENROUTER_API_KEY"
+    TYPESAFE = "TYPESAFE_API_KEY"
+
+    def __init__(self, backend=None) -> None:
+        self._backend = backend
+
+    def _module(self):
+        if self._backend is not None:
+            return self._backend
+        import keyring
+
+        return keyring
+
+    def get(self, name: str) -> str | None:
+        try:
+            value = self._module().get_password(self.SERVICE, name)
+        except Exception:
+            return None
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    def set(self, name: str, value: str) -> None:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("credential must not be empty")
+        self._module().set_password(self.SERVICE, name, cleaned)
+
+    def delete(self, name: str) -> None:
+        try:
+            self._module().delete_password(self.SERVICE, name)
+        except Exception:
+            pass
+
+    def is_set(self, name: str) -> bool:
+        return bool(os.getenv(name, "").strip() or self.get(name))
+
+    def apply_to_environment(self, *, overwrite: bool = False) -> None:
+        for name in (self.OPENROUTER, self.TYPESAFE):
+            if not overwrite and os.getenv(name, "").strip():
+                continue
+            value = self.get(name)
+            if value:
+                os.environ[name] = value
+
+
+class AutostartManager:
+    """XDG desktop-session autostart for the native Porter app."""
+
+    def __init__(
+        self,
+        command: list[str],
+        *,
+        path: Path | None = None,
+    ) -> None:
+        self.command = tuple(command)
+        self.path = path or (
+            Path.home() / ".config" / "autostart" / "porter.desktop"
+        )
+
+    @staticmethod
+    def _exec_line(command: tuple[str, ...]) -> str:
+        # Desktop Entry Exec syntax accepts quoting, but is not a shell. The
+        # conservative shlex form is valid for the paths Porter emits here.
+        return " ".join(shlex.quote(part) for part in command)
+
+    def enabled(self) -> bool:
+        return self.path.is_file()
+
+    def set_enabled(self, enabled: bool) -> None:
+        if not enabled:
+            self.path.unlink(missing_ok=True)
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            "\n".join(
+                [
+                    "[Desktop Entry]",
+                    "Type=Application",
+                    "Version=1.0",
+                    "Name=Porter",
+                    "Comment=Resident desktop intelligence",
+                    f"Exec={self._exec_line(self.command)}",
+                    "Terminal=false",
+                    "X-GNOME-Autostart-enabled=true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+
+class PorterSettingsModel(QObject):
+    settingsChanged = Signal()
+    credentialsChanged = Signal()
+    dirtyChanged = Signal()
+    applyStatusChanged = Signal()
+
+    def __init__(
+        self,
+        worker,
+        *,
+        store: PorterSettingsStore,
+        secrets: SecretStore,
+        autostart: AutostartManager,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._worker = worker
+        self._store = store
+        self._secrets = secrets
+        self._autostart = autostart
+        self._saved = store.load()
+        self._draft = self._saved
+        self._dirty = False
+        self._apply_status = ""
+
+    def _change(self, **values: Any) -> None:
+        updated = replace(self._draft, **values)
+        if updated == self._draft:
+            return
+        self._draft = updated
+        self.settingsChanged.emit()
+        dirty = updated != self._saved
+        if dirty != self._dirty:
+            self._dirty = dirty
+            self.dirtyChanged.emit()
+
+    def _set_apply_status(self, value: str) -> None:
+        if value == self._apply_status:
+            return
+        self._apply_status = value
+        self.applyStatusChanged.emit()
+
+    @Property(str, notify=settingsChanged)
+    def provider(self) -> str:
+        return self._draft.provider
+
+    @Property(str, notify=settingsChanged)
+    def jevModel(self) -> str:
+        return self._draft.jev_model
+
+    @Property(bool, notify=settingsChanged)
+    def visionEnabled(self) -> bool:
+        return self._draft.vision_enabled
+
+    @Property(str, notify=settingsChanged)
+    def visionModel(self) -> str:
+        return self._draft.vision_model
+
+    @Property(str, notify=settingsChanged)
+    def writerModel(self) -> str:
+        return self._draft.writer_model
+
+    @Property(str, notify=settingsChanged)
+    def sttModel(self) -> str:
+        return self._draft.stt_model
+
+    @Property(str, notify=settingsChanged)
+    def voiceLanguage(self) -> str:
+        return self._draft.voice_language
+
+    @Property(float, notify=settingsChanged)
+    def voiceSilence(self) -> float:
+        return self._draft.voice_silence
+
+    @Property(bool, notify=settingsChanged)
+    def handsFree(self) -> bool:
+        return self._draft.hands_free
+
+    @Property(str, notify=settingsChanged)
+    def downloadRoot(self) -> str:
+        return self._draft.download_root
+
+    @Property(bool, notify=settingsChanged)
+    def confirmActions(self) -> bool:
+        return self._draft.confirm_actions
+
+    @Property(bool, notify=settingsChanged)
+    def allowForeground(self) -> bool:
+        return self._draft.allow_foreground
+
+    @Property(str, notify=settingsChanged)
+    def visualClickMode(self) -> str:
+        return self._draft.visual_click_mode
+
+    @Property(bool, notify=settingsChanged)
+    def startAtLogin(self) -> bool:
+        return self._draft.start_at_login
+
+    @Property(bool, notify=credentialsChanged)
+    def openRouterConfigured(self) -> bool:
+        return self._secrets.is_set(SecretStore.OPENROUTER)
+
+    @Property(bool, notify=credentialsChanged)
+    def typeSafeConfigured(self) -> bool:
+        return self._secrets.is_set(SecretStore.TYPESAFE)
+
+    @Property(bool, notify=dirtyChanged)
+    def dirty(self) -> bool:
+        return self._dirty
+
+    @Property(str, notify=applyStatusChanged)
+    def applyStatus(self) -> str:
+        return self._apply_status
+
+    @Slot(str)
+    def setProvider(self, value: str) -> None:
+        if value in {"auto", "openrouter", "typesafe"}:
+            self._change(provider=value)
+
+    @Slot(str)
+    def setJevModel(self, value: str) -> None:
+        self._change(jev_model=value)
+
+    @Slot(bool)
+    def setVisionEnabled(self, value: bool) -> None:
+        self._change(vision_enabled=bool(value))
+
+    @Slot(str)
+    def setVisionModel(self, value: str) -> None:
+        self._change(vision_model=value)
+
+    @Slot(str)
+    def setWriterModel(self, value: str) -> None:
+        self._change(writer_model=value)
+
+    @Slot(str)
+    def setSttModel(self, value: str) -> None:
+        self._change(stt_model=value)
+
+    @Slot(str)
+    def setVoiceLanguage(self, value: str) -> None:
+        self._change(voice_language=value)
+
+    @Slot(float)
+    def setVoiceSilence(self, value: float) -> None:
+        self._change(voice_silence=max(0.1, min(10.0, float(value))))
+
+    @Slot(bool)
+    def setHandsFree(self, value: bool) -> None:
+        self._change(hands_free=bool(value))
+
+    @Slot(str)
+    def setDownloadRoot(self, value: str) -> None:
+        self._change(download_root=value)
+
+    @Slot(bool)
+    def setConfirmActions(self, value: bool) -> None:
+        self._change(confirm_actions=bool(value))
+
+    @Slot(bool)
+    def setAllowForeground(self, value: bool) -> None:
+        self._change(allow_foreground=bool(value))
+
+    @Slot(str)
+    def setVisualClickMode(self, value: str) -> None:
+        if value in {"strict", "permissive"}:
+            self._change(visual_click_mode=value)
+
+    @Slot(bool)
+    def setStartAtLogin(self, value: bool) -> None:
+        self._change(start_at_login=bool(value))
+
+    def _save_secret(self, name: str, value: str) -> None:
+        cleaned = value.strip()
+        if not cleaned:
+            self._set_apply_status("Enter a non-empty API key.")
+            return
+        try:
+            self._secrets.set(name, cleaned)
+        except Exception as error:
+            self._set_apply_status(f"Could not store credential: {error}")
+            return
+        os.environ[name] = cleaned
+        self.credentialsChanged.emit()
+        self._set_apply_status("Credential stored securely.")
+
+    @Slot(str)
+    def saveOpenRouterKey(self, value: str) -> None:
+        self._save_secret(SecretStore.OPENROUTER, value)
+
+    @Slot(str)
+    def saveTypeSafeKey(self, value: str) -> None:
+        self._save_secret(SecretStore.TYPESAFE, value)
+
+    @Slot()
+    def clearOpenRouterKey(self) -> None:
+        self._secrets.delete(SecretStore.OPENROUTER)
+        os.environ.pop(SecretStore.OPENROUTER, None)
+        self.credentialsChanged.emit()
+        self._set_apply_status("OpenRouter credential cleared.")
+
+    @Slot()
+    def clearTypeSafeKey(self) -> None:
+        self._secrets.delete(SecretStore.TYPESAFE)
+        os.environ.pop(SecretStore.TYPESAFE, None)
+        self.credentialsChanged.emit()
+        self._set_apply_status("TypeSafe credential cleared.")
+
+    @Slot()
+    def revert(self) -> None:
+        self._draft = self._saved
+        self._dirty = False
+        self.settingsChanged.emit()
+        self.dirtyChanged.emit()
+        self._set_apply_status("Changes reverted.")
+
+    @Slot()
+    def apply(self) -> None:
+        try:
+            self._store.save(self._draft)
+            self._autostart.set_enabled(self._draft.start_at_login)
+        except Exception as error:
+            self._set_apply_status(f"Could not save settings: {error}")
+            return
+
+        self._set_apply_status("Applying settings…")
+        future = self._worker.reconfigure(
+            self._draft.runtime_config(),
+            self._draft.voice_config(),
+        )
+        if future is None:
+            self._set_apply_status("Porter runtime is not ready.")
+            return
+
+        def finished(done) -> None:
+            try:
+                done.result()
+            except Exception as error:
+                self._set_apply_status(f"Could not apply settings: {error}")
+                return
+            self._saved = self._draft
+            if self._dirty:
+                self._dirty = False
+                self.dirtyChanged.emit()
+            self._set_apply_status("Settings applied.")
+
+        future.add_done_callback(finished)
