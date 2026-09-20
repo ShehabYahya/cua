@@ -1,0 +1,89 @@
+name: "CI: Porter deb package"
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/python/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/ui/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
+      - ".github/workflows/build-porter-deb.yml"
+  push:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/python/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/ui/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
+      - ".github/workflows/build-porter-deb.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-porter-deb-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: libs/cua-driver/examples/jev-desktop-agent
+
+jobs:
+  build-deb:
+    name: Build and verify amd64 deb
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.15"
+          enable-cache: true
+
+      - name: Install build and runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             build-essential             ccache             patchelf             libegl1             libgl1             libportaudio2             libxkbcommon-x11-0             desktop-file-utils
+
+      - name: Build Porter deb
+        run: bash packaging/linux/build-deb.sh 0.1.0
+
+      - name: Inspect package contents
+        run: |
+          DEB="$(find dist -maxdepth 1 -name 'porter_0.1.0_*.deb' -print -quit)"
+          test -n "$DEB"
+          dpkg-deb --info "$DEB"
+          dpkg-deb --contents "$DEB"
+          dpkg-deb --contents "$DEB" | grep -q './opt/porter/porter'
+          dpkg-deb --contents "$DEB" | grep -q './usr/bin/porter'
+          dpkg-deb --contents "$DEB" | grep -q             './usr/share/applications/io.github.shehabyahya.Porter.desktop'
+          dpkg-deb --contents "$DEB" | grep -q             './usr/share/icons/hicolor/scalable/apps/io.github.shehabyahya.Porter.svg'
+
+      - name: Smoke-test packaged executable
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          OPENROUTER_API_KEY: ""
+          TYPESAFE_API_KEY: ""
+        run: |
+          rm -rf /tmp/porter-deb-check
+          mkdir -p /tmp/porter-deb-check
+          DEB="$(find dist -maxdepth 1 -name 'porter_0.1.0_*.deb' -print -quit)"
+          dpkg-deb -x "$DEB" /tmp/porter-deb-check
+          /tmp/porter-deb-check/opt/porter/porter --smoke-test
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: porter-deb-${{ github.sha }}
+          path: libs/cua-driver/examples/jev-desktop-agent/dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
