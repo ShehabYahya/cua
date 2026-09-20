@@ -20,4 +20,15 @@
     <category>Utility</category>
     <category>System</category>
   </categories>
+  <releases>
+    <release version="0.1.0" date="2026-09-20">
+      <description>
+        <p>
+          First Porter preview: native Aurora Dark UI, resident Cua/Jev runtime,
+          hands-free voice, global shortcut, secure credentials, diagnostics,
+          guided Driver maintenance, and Debian packaging.
+        </p>
+      </description>
+    </release>
+  </releases>
 </component>
