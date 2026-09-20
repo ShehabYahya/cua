@@ -11,8 +11,12 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from openrouter_client import DEFAULT_REASONING_MODEL
+from openrouter_client import (
+    DEFAULT_REASONING_MODEL,
+    DEFAULT_STT_MODEL,
+)
 from porter_qt import PorterRuntimeThread, PorterViewModel
+from porter_voice import HandsFreeVoiceConfig
 from runtime import PorterRuntimeConfig
 
 
@@ -67,6 +71,38 @@ def parser() -> argparse.ArgumentParser:
         default=os.getenv("PORTER_CONFIRM_ACTIONS", "").casefold()
         in {"1", "true", "yes"},
     )
+    result.add_argument(
+        "--no-hands-free",
+        action="store_true",
+        default=os.getenv("PORTER_HANDS_FREE", "1").casefold()
+        in {"0", "false", "no", "off"},
+        help="start Porter with automatic microphone listening disabled",
+    )
+    result.add_argument(
+        "--voice-silence",
+        type=float,
+        default=float(os.getenv("PORTER_VOICE_SILENCE", "0.55")),
+        help="trailing silence in seconds that ends a spoken command",
+    )
+    result.add_argument(
+        "--voice-language",
+        default=os.getenv("PORTER_VOICE_LANGUAGE"),
+        help="optional ISO-639-1 STT language hint",
+    )
+    result.add_argument(
+        "--stt-model",
+        default=os.getenv("PORTER_STT_MODEL", DEFAULT_STT_MODEL),
+    )
+    result.add_argument(
+        "--mic",
+        type=int,
+        default=(
+            int(os.environ["PORTER_MIC"])
+            if os.getenv("PORTER_MIC", "").strip()
+            else None
+        ),
+        help="sounddevice microphone index",
+    )
     return result
 
 
@@ -119,7 +155,14 @@ def main() -> int:
         download_root=args.download_root,
         enforce_policy=args.confirm_actions,
     )
-    worker = PorterRuntimeThread(config)
+    voice_config = HandsFreeVoiceConfig(
+        enabled=not args.no_hands_free,
+        stt_model=args.stt_model,
+        language=args.voice_language,
+        microphone_device=args.mic,
+        silence_seconds=args.voice_silence,
+    )
+    worker = PorterRuntimeThread(config, voice_config)
     porter = PorterViewModel(worker)
 
     engine = QQmlApplicationEngine()
@@ -148,8 +191,12 @@ def main() -> int:
         menu = QMenu()
         open_action = QAction("Open Porter", menu)
         quick_action = QAction("Show Quick Bar", menu)
+        listen_action = QAction("Hands-free listening", menu)
+        listen_action.setCheckable(True)
+        listen_action.setChecked(False)
         menu.addAction(open_action)
         menu.addAction(quick_action)
+        menu.addAction(listen_action)
         menu.addSeparator()
         quit_action = QAction("Quit Porter", menu)
         menu.addAction(quit_action)
@@ -160,6 +207,19 @@ def main() -> int:
         quick_action.triggered.connect(
             lambda: _toggle_window(compact_window)
         )
+
+        def tray_listen_toggled(enabled: bool) -> None:
+            if enabled != porter.listening:
+                porter.setListening(enabled)
+
+        listen_action.toggled.connect(tray_listen_toggled)
+
+        def sync_listening_action() -> None:
+            listen_action.blockSignals(True)
+            listen_action.setChecked(porter.listening)
+            listen_action.blockSignals(False)
+
+        porter.listeningChanged.connect(sync_listening_action)
         quit_action.triggered.connect(app.quit)
         porter.quitRequested.connect(app.quit)
 
