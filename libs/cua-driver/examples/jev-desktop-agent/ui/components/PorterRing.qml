@@ -48,24 +48,29 @@ Item {
         border.color: Qt.rgba(0.35, 0.66, 1.0, 0.25)
     }
 
-    Rectangle {
-        id: runner
-        width: 7
-        height: 7
-        radius: width / 2
-        color: root.ringColor
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: 0
-        opacity: root.state === "working" || root.listening ? 1.0 : 0.0
-    }
+    Item {
+        id: orbit
+        anchors.fill: parent
 
-    RotationAnimator {
-        target: runner
-        from: 0
-        to: 360
-        duration: root.listening ? 900 : 1500
-        loops: Animation.Infinite
-        running: root.state === "working" || root.listening
+        Rectangle {
+            id: runner
+            width: 7
+            height: 7
+            radius: width / 2
+            color: root.ringColor
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 0
+            opacity: root.state === "working" || root.listening ? 1.0 : 0.0
+        }
+
+        RotationAnimator {
+            target: orbit
+            from: 0
+            to: 360
+            duration: root.listening ? 900 : 1500
+            loops: Animation.Infinite
+            running: root.state === "working" || root.listening
+        }
     }
 
     SequentialAnimation on scale {
