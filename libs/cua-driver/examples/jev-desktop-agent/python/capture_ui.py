@@ -14,6 +14,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
 
 from global_shortcuts import APP_ID
+from porter_maintenance import PorterMaintenanceModel
 from porter_qt import PorterRuntimeThread, PorterViewModel
 from porter_settings import (
     AutostartManager,
@@ -125,12 +126,17 @@ def main() -> int:
         secrets=secrets,
         autostart=autostart,
     )
+    maintenance = PorterMaintenanceModel()
 
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("porter", porter)
     engine.rootContext().setContextProperty(
         "settingsModel",
         settings_model,
+    )
+    engine.rootContext().setContextProperty(
+        "maintenance",
+        maintenance,
     )
     engine.load(QUrl.fromLocalFile(str(UI_DIR / "Main.qml")))
     engine.load(QUrl.fromLocalFile(str(UI_DIR / "CompactBar.qml")))
@@ -190,6 +196,13 @@ def main() -> int:
 
     steps.append(("08-advanced-diagnostics.png", diagnostics))
 
+    def about_updates() -> None:
+        main_window.setProperty("currentPage", 8)
+        app.processEvents()
+        _save(main_window, output / "09-about-updates.png")
+
+    steps.append(("09-about-updates.png", about_updates))
+
     def compact_idle() -> None:
         compact_window.show()
         compact_window.setWidth(680)
@@ -198,10 +211,10 @@ def main() -> int:
         porter._set_status("Ready")
         porter._set_detail("Porter is connected to your desktop")
         app.processEvents()
-        _save(compact_window, output / "09-compact-bar.png")
+        _save(compact_window, output / "10-compact-bar.png")
         compact_window.hide()
 
-    steps.append(("09-compact-bar.png", compact_idle))
+    steps.append(("10-compact-bar.png", compact_idle))
 
     def onboarding() -> None:
         keyring.delete_password(
@@ -217,9 +230,9 @@ def main() -> int:
         settings_model.settingsChanged.emit()
         main_window.setProperty("currentPage", 0)
         app.processEvents()
-        _save(main_window, output / "10-first-run-onboarding.png")
+        _save(main_window, output / "11-first-run-onboarding.png")
 
-    steps.append(("10-first-run-onboarding.png", onboarding))
+    steps.append(("11-first-run-onboarding.png", onboarding))
 
     index = 0
 
@@ -236,7 +249,7 @@ def main() -> int:
     QTimer.singleShot(500, run_next)
     code = app.exec()
 
-    _ = (engine, settings_model, porter, worker)
+    _ = (engine, settings_model, porter, worker, maintenance)
     temp.cleanup()
     return int(code)
 
