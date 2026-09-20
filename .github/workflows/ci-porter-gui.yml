@@ -67,21 +67,27 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.8.15"
           enable-cache: true
+
       - name: Install Qt runtime libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y             libegl1             libgl1             libxkbcommon-x11-0             desktop-file-utils
+
       - name: Install native GUI dependencies
         run: uv sync --extra gui
+
       - name: Compile Porter Python sources
         run: uv run --extra gui python -m compileall -q python
+
       - name: Run Porter native service tests
         run: |
           uv run --extra gui python -m unittest python/tests/test_porter_voice.py -v
@@ -89,6 +95,7 @@ jobs:
           uv run --extra gui python -m unittest python/tests/test_porter_maintenance.py -v
           uv run --extra gui python -m unittest python/tests/test_visual_click_mode.py -v
           uv run --extra gui python -m unittest python/tests/test_runtime.py -v
+
       - name: Validate Linux desktop packaging metadata
         run: |
           bash -n packaging/linux/build-deb.sh
@@ -100,6 +107,7 @@ jobs:
               "io.github.shehabyahya.Porter.metainfo.xml"
           )
           PY
+
       - name: Validate release workflow YAML
         run: |
           uv run --with PyYAML python - <<'PY'
@@ -114,14 +122,10 @@ jobs:
           assert "jobs" in payload
           assert "release" in payload["jobs"]
           PY
+
       - name: Verify Porter version
         run: |
-          uv run --extra gui python python/porter_app.py --version | grep -q '^Porter 0.1.0        env:
-          QT_QPA_PLATFORM: offscreen
-          QT_QUICK_BACKEND: software
-          OPENROUTER_API_KEY: ""
-          TYPESAFE_API_KEY: ""
-        run: uv run --extra gui python python/porter_app.py --smoke-test
+          test "$(uv run --extra gui python python/porter_app.py --version)" = "Porter 0.1.0"
 
       - name: Load Aurora Dark QML offscreen
         env:
