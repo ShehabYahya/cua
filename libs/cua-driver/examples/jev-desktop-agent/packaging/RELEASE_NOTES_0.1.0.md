@@ -7,6 +7,7 @@ This first preview includes:
 - Aurora Dark native PySide6/Qt Quick interface.
 - Full main window plus a translucent compact command bar.
 - Resident background runtime with tray/status presence.
+- Single-instance app activation so repeated launches restore the resident Porter process.
 - Hands-free microphone mode with local speech detection and automatic endpointing.
 - Direct Jev action selection over bounded locally compiled candidates.
 - Local multi-step operation bundles for common desktop/browser flows.
@@ -18,7 +19,7 @@ This first preview includes:
 - First-run model/Cua onboarding.
 - Cua Driver health diagnostics, doctor, guided installation, and updater controls.
 - Native Porter update checking against `porter-v*` GitHub releases.
-- Installable Debian package with launcher, icon, AppStream metadata, and autostart support.
+- Installable Debian package with launcher, icon, AppStream metadata, autostart support, and locked dependencies.
 
 ## Host requirements
 
