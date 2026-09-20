@@ -339,7 +339,19 @@ The native shell currently provides:
 - Aurora Dark accent, compact-bar idle/hover opacity, and animation preferences;
 - a personalized native greeting that is kept out of Jev's control prompt;
 - Linux desktop launcher/AppStream metadata and a reproducible Nuitka + dpkg
-  build script for an installable `.deb`.
+  build script for an installable `.deb`;
+- first-run onboarding for provider credentials, hands-free voice, login
+  startup, and Cua desktop-control readiness;
+- an Advanced & Diagnostics page backed by the already-running Driver, with
+  health warnings, capability flags, window/app counts, and bounded step /
+  candidate controls;
+- an About & Updates page with Porter version/update checks plus Cua Driver
+  refresh, doctor, update, and guided official installation controls;
+- one canonical Porter version source (`python/version.py`) used by the
+  application and checked by the Debian build;
+- a release workflow for `porter-v*` tags/manual releases that builds the
+  Debian package, smoke-tests the packaged executable, publishes a SHA-256
+  checksum, and creates the GitHub release.
 
 Hands-free listening requires `OPENROUTER_API_KEY` for transcription. Silence is
 processed locally; only detected utterances are sent to STT. Start muted with
@@ -375,8 +387,26 @@ sudo apt install ./dist/porter_0.1.0_amd64.deb
 ```
 
 The installed launcher is `/usr/bin/porter`, backed by
-`/opt/porter/porter`. Cua Driver remains a host prerequisite and is not
-silently replaced or vendored by the Porter package.
+`/opt/porter/porter`. Cua Driver is deliberately not vendored into Porter.
+If it is missing, first-run setup and About & Updates can open the official Cua
+installation guide or, after an explicit confirmation, run Cua's official Linux
+installer. Existing installations can run `cua-driver doctor` or
+`cua-driver update --apply` directly from the Porter UI.
+
+### Porter v0.1.0 release path
+
+The release identity is `porter-v0.1.0`. Release notes live in
+`packaging/RELEASE_NOTES_0.1.0.md`.
+
+The `Release: Porter` GitHub Actions workflow can be run manually after this
+branch is on the default branch, or automatically by pushing a matching
+`porter-v*` tag. It verifies that the requested release version matches
+`python/version.py`, builds and smoke-tests the real package, creates
+`porter_SHA256SUMS.txt`, and publishes both files to the GitHub release.
+
+Porter's About & Updates page checks GitHub releases on demand and only considers
+tags with the `porter-v` prefix, so unrelated Cua repository releases do not
+appear as Porter updates.
 
 For a headless QML load check:
 
