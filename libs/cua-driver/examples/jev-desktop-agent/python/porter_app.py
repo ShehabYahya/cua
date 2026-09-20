@@ -27,7 +27,11 @@ from porter_settings import (
 
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
+ROOT = (
+    HERE.parent
+    if (HERE.parent / "ui").is_dir()
+    else HERE
+)
 UI_DIR = ROOT / "ui"
 ASSETS_DIR = ROOT / "assets"
 
