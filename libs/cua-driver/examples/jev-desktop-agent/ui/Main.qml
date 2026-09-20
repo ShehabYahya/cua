@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "components"
+import "pages"
 
 ApplicationWindow {
     id: root
@@ -69,7 +70,7 @@ ApplicationWindow {
                                 width: 42
                                 height: 42
                                 state: porter.state
-                                listening: porter.listening
+                                listening: porter.state === "listening"
                             }
 
                             Column {
@@ -159,7 +160,7 @@ ApplicationWindow {
                                 width: 32
                                 height: 32
                                 state: porter.state
-                                listening: porter.listening
+                                listening: porter.state === "listening"
                             }
 
                             Column {
@@ -247,7 +248,7 @@ ApplicationWindow {
                                             width: 40
                                             height: 40
                                             state: porter.state
-                                            listening: porter.listening
+                                            listening: porter.state === "listening"
                                         }
 
                                         ColumnLayout {
@@ -370,14 +371,14 @@ ApplicationWindow {
 
                                         Text {
                                             text: porter.listening
-                                                ? "Listening enabled"
-                                                : "Voice service comes in the next chunk"
+                                                ? "Always listening locally"
+                                                : "Microphone muted"
                                             color: porter.listening ? "#7FC7FF" : "#D9E8FB"
                                             font.pixelSize: 14
                                         }
 
                                         AuroraButton {
-                                            text: porter.listening ? "Disable" : "Preview control"
+                                            text: porter.listening ? "Mute" : "Enable"
                                             enabled: !porter.busy
                                             onClicked: porter.toggleListening()
                                         }
@@ -436,9 +437,7 @@ ApplicationWindow {
                         }
                     }
 
-                    PlaceholderPage {
-                        pageTitle: "Voice & Audio"
-                        pageDescription: "Hands-free listening, microphone endpointing and spoken feedback are wired in the next chunk."
+                    VoicePage {
                     }
 
                     PlaceholderPage {
