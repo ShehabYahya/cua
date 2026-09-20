@@ -36,6 +36,7 @@ class PorterRuntimeThread(QThread):
     runtimeFailed = Signal(str)
     commandFinished = Signal(str, str)
     commandFailed = Signal(str)
+    reconfigured = Signal()
     stopped = Signal()
 
     def __init__(
@@ -77,8 +78,9 @@ class PorterRuntimeThread(QThread):
             loop.run_forever()
         finally:
             try:
-                if runtime.started:
-                    loop.run_until_complete(runtime.stop())
+                current = self._runtime
+                if current is not None and current.started:
+                    loop.run_until_complete(current.stop())
             except Exception:
                 pass
             pending = [
@@ -161,6 +163,47 @@ class PorterRuntimeThread(QThread):
                 self.commandFailed.emit(str(error))
 
         future.add_done_callback(finished)
+
+    def reconfigure(
+        self,
+        config: PorterRuntimeConfig,
+        voice_config: HandsFreeVoiceConfig,
+    ) -> concurrent.futures.Future | None:
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return None
+
+        async def apply() -> None:
+            current = self._runtime
+            if current is None:
+                raise RuntimeError("Porter runtime is not ready.")
+            if current.busy:
+                raise RuntimeError(
+                    "Wait for the current Porter command to finish before applying settings."
+                )
+
+            was_listening = current.hands_free_enabled
+            await current.stop()
+
+            replacement = PorterRuntime(
+                config,
+                event_sink=self._forward_event,
+            )
+            self._runtime = replacement
+            self._config = config
+            self._voice_config = voice_config
+            try:
+                await replacement.start()
+                if voice_config.enabled and was_listening:
+                    await replacement.start_hands_free(voice_config)
+                elif voice_config.enabled:
+                    await replacement.start_hands_free(voice_config)
+            except Exception:
+                await replacement.stop()
+                raise
+            self.reconfigured.emit()
+
+        return asyncio.run_coroutine_threadsafe(apply(), loop)
 
     @Slot()
     def cancel(self) -> None:
