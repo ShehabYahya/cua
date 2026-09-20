@@ -458,6 +458,14 @@ class PorterSettingsModel(QObject):
     def animationsEnabled(self) -> bool:
         return self._draft.animations_enabled
 
+    @Property(int, notify=settingsChanged)
+    def maxSteps(self) -> int:
+        return self._draft.max_steps
+
+    @Property(int, notify=settingsChanged)
+    def maxCandidates(self) -> int:
+        return self._draft.max_candidates
+
     @Property(bool, notify=settingsChanged)
     def onboardingComplete(self) -> bool:
         return self._saved.onboarding_complete
@@ -593,6 +601,14 @@ class PorterSettingsModel(QObject):
     @Slot(bool)
     def setOnboardingComplete(self, value: bool) -> None:
         self._change(onboarding_complete=bool(value))
+
+    @Slot(int)
+    def setMaxSteps(self, value: int) -> None:
+        self._change(max_steps=max(1, min(200, int(value))))
+
+    @Slot(int)
+    def setMaxCandidates(self, value: int) -> None:
+        self._change(max_candidates=max(4, min(32, int(value))))
 
     def _save_secret(self, name: str, value: str) -> None:
         cleaned = value.strip()
