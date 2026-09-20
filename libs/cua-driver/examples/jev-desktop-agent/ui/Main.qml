@@ -105,7 +105,8 @@ ApplicationWindow {
                             "Shortcuts",
                             "Personalization",
                             "Appearance",
-                            "Advanced"
+                            "Advanced",
+                            "About & Updates"
                         ]
 
                         delegate: Rectangle {
@@ -474,6 +475,9 @@ ApplicationWindow {
                     }
 
                     AdvancedPage {
+                    }
+
+                    AboutPage {
                     }
                 }
             }
