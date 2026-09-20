@@ -20,6 +20,7 @@ from openrouter_client import (
 )
 from perception import NoopPerceiver, OpenRouterVisionPerceiver
 from voice import VoiceAssistant
+from porter_voice import HandsFreeVoiceConfig, HandsFreeVoiceService
 from writer import OpenRouterWriter
 
 
@@ -76,6 +77,7 @@ class PorterRuntime:
         self._chooser = None
         self._openrouter: OpenRouterClient | None = None
         self._agent: AgentLoop | None = None
+        self._voice_service: HandsFreeVoiceService | None = None
 
         self._command_lock = asyncio.Lock()
         self._cancel_event: asyncio.Event | None = None
@@ -126,6 +128,24 @@ class PorterRuntime:
                 command_id=command_id,
                 data=data,
             )
+        )
+
+    def emit_event(
+        self,
+        kind: str,
+        message: str = "",
+        command_id: str | None = None,
+        data: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        """Public event hook for resident services such as hands-free voice."""
+        payload = dict(data or {})
+        payload.update(extra)
+        self._emit(
+            kind,
+            message,
+            command_id=command_id,
+            **payload,
         )
 
     def _progress(self, message: str) -> None:
@@ -205,6 +225,8 @@ class PorterRuntime:
         if not self._started and self._stack is None:
             return
         self._emit("runtime_stopping", "Stopping Porter runtime…")
+
+        await self.stop_hands_free()
         self.cancel()
 
         if self._command_lock.locked():
@@ -306,6 +328,57 @@ class PorterRuntime:
             command_id=command_id,
         )
         return True
+
+    @property
+    def hands_free_enabled(self) -> bool:
+        service = self._voice_service
+        return bool(service is not None and service.running)
+
+    async def start_hands_free(
+        self,
+        config: HandsFreeVoiceConfig | None = None,
+    ) -> bool:
+        if not self._started:
+            raise RuntimeError(
+                "PorterRuntime must be started before hands-free voice"
+            )
+        if self._openrouter is None:
+            self._emit(
+                "voice_unavailable",
+                "Hands-free voice requires an OpenRouter API key for transcription.",
+            )
+            return False
+        if self.hands_free_enabled:
+            return True
+        service = HandsFreeVoiceService(
+            self,
+            self._openrouter,
+            config or HandsFreeVoiceConfig(),
+        )
+        self._voice_service = service
+        try:
+            await service.start()
+        except Exception:
+            self._voice_service = None
+            raise
+        return True
+
+    async def stop_hands_free(self) -> None:
+        service = self._voice_service
+        if service is None:
+            return
+        self._voice_service = None
+        await service.stop()
+
+    async def set_hands_free(
+        self,
+        enabled: bool,
+        config: HandsFreeVoiceConfig | None = None,
+    ) -> bool:
+        if enabled:
+            return await self.start_hands_free(config)
+        await self.stop_hands_free()
+        return False
 
     def create_voice_assistant(
         self,
