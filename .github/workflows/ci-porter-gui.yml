@@ -13,6 +13,7 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_visual_click_mode.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_runtime.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/runtime.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/events.py"
       - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
@@ -29,6 +30,7 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_visual_click_mode.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_runtime.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/runtime.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/events.py"
       - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
@@ -73,6 +75,7 @@ jobs:
           uv run --extra gui python -m unittest python/tests/test_porter_voice.py -v
           uv run --extra gui python -m unittest python/tests/test_porter_settings.py -v
           uv run --extra gui python -m unittest python/tests/test_visual_click_mode.py -v
+          uv run --extra gui python -m unittest python/tests/test_runtime.py -v
       - name: Load Aurora Dark QML offscreen
         env:
           QT_QPA_PLATFORM: offscreen
