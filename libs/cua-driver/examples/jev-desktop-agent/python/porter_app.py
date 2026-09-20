@@ -40,6 +40,11 @@ ASSETS_DIR = ROOT / "assets"
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Porter native desktop app")
     result.add_argument(
+        "--version",
+        action="version",
+        version=f"Porter {__version__}",
+    )
+    result.add_argument(
         "--smoke-test",
         action="store_true",
         help="load both native QML windows and exit without starting the backend",
