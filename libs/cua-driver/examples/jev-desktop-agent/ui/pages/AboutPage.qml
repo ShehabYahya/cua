@@ -200,7 +200,7 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     text: maintenance.driverInstalled
-                        ? "Update uses Cua Driver's own updater. Porter never replaces the Driver with a bundled copy."
+                        ? "Update uses Cua Driver's own updater. Restart the Porter backend afterward so the resident Cua process uses the new binary."
                         : "Porter can launch Cua's official installer after confirmation, or you can use the official installation guide."
                     color: "#7188A7"
                     font.pixelSize: 11
@@ -224,6 +224,13 @@ Item {
                             else
                                 installDialog.open()
                         }
+                    }
+
+                    AuroraButton {
+                        text: "Restart backend"
+                        visible: maintenance.driverInstalled
+                        enabled: !maintenance.driverBusy && !porter.busy
+                        onClicked: porter.restartBackend()
                     }
 
                     AuroraButton {
