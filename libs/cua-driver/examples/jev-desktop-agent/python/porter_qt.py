@@ -14,6 +14,7 @@ from PySide6.QtCore import (
 )
 
 from events import RuntimeEvent
+from global_shortcuts import GlobalShortcutConfig, GlobalShortcutPortal
 from porter_voice import HandsFreeVoiceConfig
 from runtime import PorterRuntime, PorterRuntimeConfig
 
@@ -38,17 +39,22 @@ class PorterRuntimeThread(QThread):
     commandFailed = Signal(str)
     reconfigured = Signal()
     reconfigureFailed = Signal(str)
+    shortcutActivated = Signal()
+    shortcutStatusChanged = Signal(str)
     stopped = Signal()
 
     def __init__(
         self,
         config: PorterRuntimeConfig,
         voice_config: HandsFreeVoiceConfig | None = None,
+        shortcut_config: GlobalShortcutConfig | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._config = config
         self._voice_config = voice_config or HandsFreeVoiceConfig()
+        self._shortcut_config = shortcut_config or GlobalShortcutConfig()
+        self._shortcut_service: GlobalShortcutPortal | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runtime: PorterRuntime | None = None
         self._shutdown_requested = False
@@ -63,7 +69,24 @@ class PorterRuntimeThread(QThread):
         )
         self._runtime = runtime
 
+        shortcut_service = GlobalShortcutPortal(
+            self._shortcut_config,
+            on_activated=lambda: self.shortcutActivated.emit(),
+            on_status=lambda message: self.shortcutStatusChanged.emit(message),
+        )
+        self._shortcut_service = shortcut_service
+
         async def bootstrap() -> None:
+            if self._shortcut_config.enabled:
+                try:
+                    await shortcut_service.start()
+                except Exception as error:
+                    self.shortcutStatusChanged.emit(
+                        f"Global shortcut unavailable: {error}"
+                    )
+            else:
+                self.shortcutStatusChanged.emit("Global shortcut disabled")
+
             try:
                 await runtime.start()
                 if self._voice_config.enabled:
@@ -80,6 +103,12 @@ class PorterRuntimeThread(QThread):
         try:
             loop.run_forever()
         finally:
+            try:
+                service = self._shortcut_service
+                if service is not None:
+                    loop.run_until_complete(service.stop())
+            except Exception:
+                pass
             try:
                 current = self._runtime
                 if current is not None and current.started:
@@ -103,6 +132,10 @@ class PorterRuntimeThread(QThread):
     @property
     def voice_config(self) -> HandsFreeVoiceConfig:
         return self._voice_config
+
+    @property
+    def shortcut_config(self) -> GlobalShortcutConfig:
+        return self._shortcut_config
 
     def _forward_event(self, event: RuntimeEvent) -> None:
         self.eventReceived.emit(event)
@@ -171,6 +204,7 @@ class PorterRuntimeThread(QThread):
         self,
         config: PorterRuntimeConfig,
         voice_config: HandsFreeVoiceConfig,
+        shortcut_config: GlobalShortcutConfig | None = None,
     ) -> concurrent.futures.Future | None:
         loop = self._loop
         if loop is None or not loop.is_running():
@@ -195,12 +229,38 @@ class PorterRuntimeThread(QThread):
             self._runtime = replacement
             self._config = config
             self._voice_config = voice_config
+            next_shortcut = shortcut_config or self._shortcut_config
             try:
                 await replacement.start()
                 if voice_config.enabled and was_listening:
                     await replacement.start_hands_free(voice_config)
                 elif voice_config.enabled:
                     await replacement.start_hands_free(voice_config)
+
+                if next_shortcut != self._shortcut_config:
+                    old_service = self._shortcut_service
+                    if old_service is not None:
+                        await old_service.stop()
+                    new_service = GlobalShortcutPortal(
+                        next_shortcut,
+                        on_activated=lambda: self.shortcutActivated.emit(),
+                        on_status=lambda message: self.shortcutStatusChanged.emit(
+                            message
+                        ),
+                    )
+                    self._shortcut_service = new_service
+                    self._shortcut_config = next_shortcut
+                    if next_shortcut.enabled:
+                        try:
+                            await new_service.start()
+                        except Exception as error:
+                            self.shortcutStatusChanged.emit(
+                                f"Global shortcut unavailable: {error}"
+                            )
+                    else:
+                        self.shortcutStatusChanged.emit(
+                            "Global shortcut disabled"
+                        )
             except Exception:
                 await replacement.stop()
                 raise
@@ -237,6 +297,9 @@ class PorterRuntimeThread(QThread):
 
         async def stop_runtime() -> None:
             try:
+                service = self._shortcut_service
+                if service is not None:
+                    await service.stop()
                 if runtime is not None:
                     await runtime.stop()
             finally:
@@ -262,6 +325,7 @@ class PorterViewModel(QObject):
     voiceSilenceSecondsChanged = Signal()
     transcriptChanged = Signal()
     lastCommandChanged = Signal()
+    shortcutStatusChanged = Signal()
 
     toggleCompactRequested = Signal()
     showMainRequested = Signal()
@@ -282,6 +346,7 @@ class PorterViewModel(QObject):
         self._mic_level = 0.0
         self._transcript = ""
         self._last_command = ""
+        self._shortcut_status = "Global shortcut starting…"
         self._voice_silence_seconds = worker.voice_config.silence_seconds
 
         worker.eventReceived.connect(self._on_runtime_event)
@@ -289,6 +354,7 @@ class PorterViewModel(QObject):
         worker.runtimeFailed.connect(self._on_runtime_failed)
         worker.commandFinished.connect(self._on_command_finished)
         worker.commandFailed.connect(self._on_command_failed)
+        worker.shortcutStatusChanged.connect(self._on_shortcut_status)
 
     @Property(str, notify=stateChanged)
     def state(self) -> str:
@@ -325,6 +391,10 @@ class PorterViewModel(QObject):
     @Property(str, notify=lastCommandChanged)
     def lastCommand(self) -> str:
         return self._last_command
+
+    @Property(str, notify=shortcutStatusChanged)
+    def shortcutStatus(self) -> str:
+        return self._shortcut_status
 
     def _set_state(self, value: str) -> None:
         if value == self._state:
@@ -542,3 +612,10 @@ class PorterViewModel(QObject):
         self._set_state("error")
         self._set_status("Command failed")
         self._set_detail(message)
+
+    @Slot(str)
+    def _on_shortcut_status(self, message: str) -> None:
+        if message == self._shortcut_status:
+            return
+        self._shortcut_status = message
+        self.shortcutStatusChanged.emit()
