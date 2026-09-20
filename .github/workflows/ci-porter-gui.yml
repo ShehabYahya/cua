@@ -23,6 +23,7 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/events.py"
       - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
       - ".github/workflows/ci-porter-gui.yml"
+      - ".github/workflows/release-porter.yml"
   push:
     paths:
       - "libs/cua-driver/examples/jev-desktop-agent/ui/**"
@@ -45,6 +46,7 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/events.py"
       - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
       - ".github/workflows/ci-porter-gui.yml"
+      - ".github/workflows/release-porter.yml"
   workflow_dispatch:
 
 permissions:
@@ -97,6 +99,20 @@ jobs:
               "packaging/linux/"
               "io.github.shehabyahya.Porter.metainfo.xml"
           )
+          PY
+      - name: Validate release workflow YAML
+        run: |
+          uv run --with PyYAML python - <<'PY'
+          import pathlib
+          import yaml
+
+          path = pathlib.Path(
+              "../../../../.github/workflows/release-porter.yml"
+          ).resolve()
+          payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+          assert isinstance(payload, dict)
+          assert "jobs" in payload
+          assert "release" in payload["jobs"]
           PY
       - name: Load Aurora Dark QML offscreen
         env:
