@@ -12,7 +12,8 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from global_shortcuts import APP_ID
+from porter_maintenance import PorterMaintenanceModel
+from version import APP_ID, __version__
 from openrouter_client import (
     DEFAULT_REASONING_MODEL,
     DEFAULT_STT_MODEL,
@@ -156,7 +157,7 @@ def main() -> int:
     QCoreApplication.setOrganizationName("Porter")
     QCoreApplication.setOrganizationDomain("porter.local")
     QCoreApplication.setApplicationName("Porter")
-    QCoreApplication.setApplicationVersion("0.1.0")
+    QCoreApplication.setApplicationVersion(__version__)
     QGuiApplication.setDesktopFileName(APP_ID)
     QQuickStyle.setStyle("Basic")
 
@@ -219,10 +220,12 @@ def main() -> int:
         secrets=secret_store,
         autostart=autostart,
     )
+    maintenance = PorterMaintenanceModel()
 
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("porter", porter)
     engine.rootContext().setContextProperty("settingsModel", settings_model)
+    engine.rootContext().setContextProperty("maintenance", maintenance)
     engine.load(QUrl.fromLocalFile(str(UI_DIR / "Main.qml")))
     engine.load(QUrl.fromLocalFile(str(UI_DIR / "CompactBar.qml")))
 
@@ -326,6 +329,7 @@ def main() -> int:
         settings_store,
         secret_store,
         autostart,
+        maintenance,
     )
     return int(exit_code)
 
