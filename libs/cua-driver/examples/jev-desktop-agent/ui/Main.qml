@@ -440,14 +440,10 @@ ApplicationWindow {
                     VoicePage {
                     }
 
-                    PlaceholderPage {
-                        pageTitle: "Models"
-                        pageDescription: "Provider, Jev, vision and writer settings will live here."
+                    ModelsPage {
                     }
 
-                    PlaceholderPage {
-                        pageTitle: "Computer Control"
-                        pageDescription: "Cua health, foreground permission, visual click mode and download boundaries."
+                    ComputerPage {
                     }
 
                     PlaceholderPage {
