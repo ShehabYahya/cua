@@ -8,6 +8,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, Property, QSettings, Signal, Slot
 
 from jev_adapter import OPENROUTER_MODEL
+from global_shortcuts import GlobalShortcutConfig
 from openrouter_client import DEFAULT_REASONING_MODEL, DEFAULT_STT_MODEL
 from porter_voice import HandsFreeVoiceConfig
 from runtime import PorterRuntimeConfig
@@ -30,6 +31,13 @@ class PorterAppSettings:
     allow_foreground: bool = True
     visual_click_mode: str = "strict"
     start_at_login: bool = False
+    global_shortcut_enabled: bool = True
+    global_shortcut_trigger: str = "CTRL+ALT+space"
+    preferred_name: str = ""
+    accent_color: str = "#49A7FF"
+    compact_idle_opacity: float = 0.26
+    compact_hover_opacity: float = 0.72
+    animations_enabled: bool = True
     max_steps: int = 30
     max_candidates: int = 32
 
@@ -55,6 +63,15 @@ class PorterAppSettings:
             language=self.voice_language.strip() or None,
             microphone_device=self.microphone_device,
             silence_seconds=max(0.1, min(10.0, float(self.voice_silence))),
+        )
+
+    def shortcut_config(self) -> GlobalShortcutConfig:
+        return GlobalShortcutConfig(
+            enabled=self.global_shortcut_enabled,
+            preferred_trigger=(
+                self.global_shortcut_trigger.strip()
+                or "CTRL+ALT+space"
+            ),
         )
 
 
@@ -124,6 +141,29 @@ class PorterSettingsStore:
                 s.value("general/start_at_login", False),
                 False,
             ),
+            global_shortcut_enabled=self._bool(
+                s.value("shortcuts/enabled", True),
+                True,
+            ),
+            global_shortcut_trigger=str(
+                s.value("shortcuts/preferred_trigger", "CTRL+ALT+space")
+            ),
+            preferred_name=str(
+                s.value("personalization/preferred_name", "")
+            ),
+            accent_color=str(
+                s.value("appearance/accent_color", "#49A7FF")
+            ),
+            compact_idle_opacity=float(
+                s.value("appearance/compact_idle_opacity", 0.26)
+            ),
+            compact_hover_opacity=float(
+                s.value("appearance/compact_hover_opacity", 0.72)
+            ),
+            animations_enabled=self._bool(
+                s.value("appearance/animations_enabled", True),
+                True,
+            ),
             max_steps=int(s.value("advanced/max_steps", 30)),
             max_candidates=int(s.value("advanced/max_candidates", 32)),
         )
@@ -148,6 +188,28 @@ class PorterSettingsStore:
         s.setValue("computer/allow_foreground", value.allow_foreground)
         s.setValue("computer/visual_click_mode", value.visual_click_mode)
         s.setValue("general/start_at_login", value.start_at_login)
+        s.setValue("shortcuts/enabled", value.global_shortcut_enabled)
+        s.setValue(
+            "shortcuts/preferred_trigger",
+            value.global_shortcut_trigger,
+        )
+        s.setValue(
+            "personalization/preferred_name",
+            value.preferred_name,
+        )
+        s.setValue("appearance/accent_color", value.accent_color)
+        s.setValue(
+            "appearance/compact_idle_opacity",
+            value.compact_idle_opacity,
+        )
+        s.setValue(
+            "appearance/compact_hover_opacity",
+            value.compact_hover_opacity,
+        )
+        s.setValue(
+            "appearance/animations_enabled",
+            value.animations_enabled,
+        )
         s.setValue("advanced/max_steps", value.max_steps)
         s.setValue("advanced/max_candidates", value.max_candidates)
         s.sync()
@@ -359,6 +421,34 @@ class PorterSettingsModel(QObject):
     def startAtLogin(self) -> bool:
         return self._draft.start_at_login
 
+    @Property(bool, notify=settingsChanged)
+    def globalShortcutEnabled(self) -> bool:
+        return self._draft.global_shortcut_enabled
+
+    @Property(str, notify=settingsChanged)
+    def globalShortcutTrigger(self) -> str:
+        return self._draft.global_shortcut_trigger
+
+    @Property(str, notify=settingsChanged)
+    def preferredName(self) -> str:
+        return self._draft.preferred_name
+
+    @Property(str, notify=settingsChanged)
+    def accentColor(self) -> str:
+        return self._draft.accent_color
+
+    @Property(float, notify=settingsChanged)
+    def compactIdleOpacity(self) -> float:
+        return self._draft.compact_idle_opacity
+
+    @Property(float, notify=settingsChanged)
+    def compactHoverOpacity(self) -> float:
+        return self._draft.compact_hover_opacity
+
+    @Property(bool, notify=settingsChanged)
+    def animationsEnabled(self) -> bool:
+        return self._draft.animations_enabled
+
     @Property(bool, notify=credentialsChanged)
     def openRouterConfigured(self) -> bool:
         return self._secrets.is_set(SecretStore.OPENROUTER)
@@ -432,6 +522,49 @@ class PorterSettingsModel(QObject):
     @Slot(bool)
     def setStartAtLogin(self, value: bool) -> None:
         self._change(start_at_login=bool(value))
+
+    @Slot(bool)
+    def setGlobalShortcutEnabled(self, value: bool) -> None:
+        self._change(global_shortcut_enabled=bool(value))
+
+    @Slot(str)
+    def setGlobalShortcutTrigger(self, value: str) -> None:
+        cleaned = value.strip()
+        if cleaned:
+            self._change(global_shortcut_trigger=cleaned)
+
+    @Slot(str)
+    def setPreferredName(self, value: str) -> None:
+        self._change(preferred_name=value.strip()[:80])
+
+    @Slot(str)
+    def setAccentColor(self, value: str) -> None:
+        cleaned = value.strip()
+        if (
+            len(cleaned) == 7
+            and cleaned.startswith("#")
+            and all(
+                char in "0123456789abcdefABCDEF"
+                for char in cleaned[1:]
+            )
+        ):
+            self._change(accent_color=cleaned.upper())
+
+    @Slot(float)
+    def setCompactIdleOpacity(self, value: float) -> None:
+        self._change(
+            compact_idle_opacity=max(0.08, min(0.60, float(value)))
+        )
+
+    @Slot(float)
+    def setCompactHoverOpacity(self, value: float) -> None:
+        self._change(
+            compact_hover_opacity=max(0.40, min(0.98, float(value)))
+        )
+
+    @Slot(bool)
+    def setAnimationsEnabled(self, value: bool) -> None:
+        self._change(animations_enabled=bool(value))
 
     def _save_secret(self, name: str, value: str) -> None:
         cleaned = value.strip()
@@ -510,6 +643,7 @@ class PorterSettingsModel(QObject):
         future = self._worker.reconfigure(
             self._draft.runtime_config(),
             self._draft.voice_config(),
+            self._draft.shortcut_config(),
         )
         if future is None:
             self._set_apply_status("Porter runtime is not ready.")
