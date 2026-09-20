@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import threading
 import wave
+from collections import deque
+from typing import Callable
 
 from contracts import Candidate
 from loop import AgentLoop, RunResult
@@ -75,6 +77,9 @@ class Microphone:
         *,
         stop_event: threading.Event | None = None,
         pause_event: threading.Event | None = None,
+        on_speech_start: Callable[[], None] | None = None,
+        on_level: Callable[[float, float], None] | None = None,
+        pre_roll_seconds: float = 0.3,
     ) -> bytes | None:
         try:
             import numpy as np
@@ -89,6 +94,10 @@ class Microphone:
         speech_blocks = 0
         silent_after_speech = 0
         noise_samples: list[float] = []
+        pre_roll = deque(
+            maxlen=max(1, int(pre_roll_seconds / self.BLOCK_SECONDS))
+        )
+        speech_started = False
         max_blocks = max(1, int(self.max_seconds / self.BLOCK_SECONDS))
         silence_limit = max(1, int(self.silence_seconds / self.BLOCK_SECONDS))
         min_speech_blocks = max(1, int(self.min_speech_seconds / self.BLOCK_SECONDS))
@@ -115,18 +124,37 @@ class Microphone:
                     noise_samples.append(rms)
                 noise = sum(noise_samples) / len(noise_samples) if noise_samples else 0.0
                 threshold = max(self.base_threshold, noise * 3.0)
+                if on_level is not None:
+                    try:
+                        on_level(rms, threshold)
+                    except Exception:
+                        pass
                 is_speech = rms >= threshold
                 if is_speech:
+                    if not speech_started:
+                        speech_started = True
+                        blocks.extend(pre_roll)
+                        pre_roll.clear()
+                        if on_speech_start is not None:
+                            try:
+                                on_speech_start()
+                            except Exception:
+                                pass
                     speech_blocks += 1
                     silent_after_speech = 0
                     blocks.append(mono)
                 elif speech_blocks:
                     silent_after_speech += 1
                     blocks.append(mono)
-                    if speech_blocks >= min_speech_blocks and silent_after_speech >= silence_limit:
+                    if (
+                        speech_blocks >= min_speech_blocks
+                        and silent_after_speech >= silence_limit
+                    ):
                         break
-                elif index > int(8.0 / self.BLOCK_SECONDS):
-                    return None
+                else:
+                    pre_roll.append(mono)
+                    if index > int(8.0 / self.BLOCK_SECONDS):
+                        return None
 
         if speech_blocks < min_speech_blocks or not blocks:
             return None
