@@ -473,12 +473,13 @@ ApplicationWindow {
                     AppearancePage {
                     }
 
-                    PlaceholderPage {
-                        pageTitle: "Advanced"
-                        pageDescription: "Capabilities, diagnostics, runtime logs and developer options."
+                    AdvancedPage {
                     }
                 }
             }
         }
+    }
+
+    Onboarding {
     }
 }
