@@ -37,6 +37,7 @@ class PorterRuntimeThread(QThread):
     commandFinished = Signal(str, str)
     commandFailed = Signal(str)
     reconfigured = Signal()
+    reconfigureFailed = Signal(str)
     stopped = Signal()
 
     def __init__(
@@ -203,7 +204,16 @@ class PorterRuntimeThread(QThread):
                 raise
             self.reconfigured.emit()
 
-        return asyncio.run_coroutine_threadsafe(apply(), loop)
+        future = asyncio.run_coroutine_threadsafe(apply(), loop)
+
+        def finished(done: concurrent.futures.Future) -> None:
+            try:
+                done.result()
+            except Exception as error:
+                self.reconfigureFailed.emit(str(error))
+
+        future.add_done_callback(finished)
+        return future
 
     @Slot()
     def cancel(self) -> None:
