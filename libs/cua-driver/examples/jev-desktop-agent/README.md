@@ -107,10 +107,10 @@ resulting state read == next iteration's observation
   menu/list/radio/check controls, and action-advertising widgets.
 - Optional Cua `parse_visual_regions` integration; OpenRouter vision is a lazy
   fallback for inaccessible/custom-drawn controls.
-- Canonical screenshot coordinates: when the advertised Driver supports them,
-  visual clicks use region-center pixels directly without requiring an optional
-  `capture_id`, and attach `capture_id` when Driver provides one. No handcrafted
-  OS scale conversion.
+- Canonical screenshot coordinates with a configurable binding mode. Native
+  Porter defaults to **Strict**, which requires capture-bound visual clicks.
+  **Permissive** additionally allows Driver-supported canonical coordinates
+  without a capture binding. No handcrafted OS scale conversion is used.
 - Dynamic semantic actions, prepared-text typing, focused-window typing fallback,
   common hotkeys (including F2 rename), double/right click where requested,
   scrolling, visual actions, `done`, `reobserve`, and `abstain`.
@@ -223,11 +223,15 @@ or the WinRects helper. Normal startup does not run this health probe.
 
 ## Verification status
 
-This redesign was checked with **syntax/import checks only** (`py_compile` on the
-changed modules). The unit test suite was **not run** for this redesign, and no
-measured latency, reliability, or live-desktop proof is claimed. The existing
-legacy tests were written against earlier behavior and may need updates before
-they pass.
+Porter has a dedicated native CI gate that compiles the Python sources, runs
+credential-free runtime/voice/settings/visual-mode unit tests, installs the Qt
+runtime dependencies, and loads both QML windows offscreen. That gate is kept
+separate from the older harness suite.
+
+The broader legacy harness suite still contains planner/verifier-era assertions
+that predate the current direct Jev architecture, so it is not yet a clean
+release gate. No measured live-desktop latency or reliability claim is made
+from CI alone.
 
 The legacy unit suite is credential-free and does not operate the desktop:
 
@@ -316,7 +320,17 @@ The native shell currently provides:
 - automatic trailing-silence endpointing (0.55 s by default);
 - STT submission without pressing a microphone button or Enter;
 - spoken "stop"/"cancel"/"never mind" cancellation while Porter is working;
-- live listening, microphone level, transcription and command state in QML.
+- live listening, microphone level, transcription and command state in QML;
+- persistent non-secret settings through `QSettings`;
+- OpenRouter and TypeSafe API keys through the OS credential/keyring service,
+  never the QSettings file;
+- real Models & Providers, Computer Control, and Voice & Audio settings pages;
+- configurable Strict/Permissive visual click binding;
+- optional consequential-action confirmation and foreground escalation;
+- persistent download-root and voice/model defaults;
+- XDG desktop-session autostart ("Start Porter when I sign in");
+- live runtime reconfiguration: Apply restarts the backend stack inside the
+  resident Porter process without closing the native application.
 
 Hands-free listening requires `OPENROUTER_API_KEY` for transcription. Silence is
 processed locally; only detected utterances are sent to STT. Start muted with
