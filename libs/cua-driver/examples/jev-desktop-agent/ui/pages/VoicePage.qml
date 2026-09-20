@@ -172,29 +172,153 @@ Item {
                 anchors.margins: 20
                 spacing: 10
 
-                Text {
-                    text: "How it works"
-                    color: "#DDEAFF"
-                    font.pixelSize: 16
-                    font.weight: Font.DemiBold
+                RowLayout {
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: "Voice defaults"
+                        color: "#DDEAFF"
+                        font.pixelSize: 16
+                        font.weight: Font.DemiBold
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    AuroraButton {
+                        text: "Revert"
+                        enabled: settingsModel.dirty
+                        onClicked: settingsModel.revert()
+                    }
+
+                    AuroraButton {
+                        text: "Apply"
+                        primary: true
+                        enabled: settingsModel.dirty
+                        onClicked: settingsModel.apply()
+                    }
                 }
 
-                Text {
+                RowLayout {
                     Layout.fillWidth: true
-                    text: "Silence is processed locally and discarded. Once local VAD detects speech, Porter buffers the utterance, preserves a short pre-roll so fast speech is not clipped, detects the ending pause, transcribes that utterance, and sends the resulting command to the same resident PorterRuntime."
-                    color: "#7188A7"
-                    font.pixelSize: 13
-                    wrapMode: Text.Wrap
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+
+                        Text {
+                            text: "Start hands-free automatically"
+                            color: "#D6E7FA"
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                        }
+
+                        Text {
+                            text: "Silence stays local; detected utterances are sent to STT."
+                            color: "#7188A7"
+                            font.pixelSize: 11
+                        }
+                    }
+
+                    Switch {
+                        checked: settingsModel.handsFree
+                        onToggled: settingsModel.setHandsFree(checked)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        Text {
+                            text: "STT model"
+                            color: "#7188A7"
+                            font.pixelSize: 11
+                        }
+
+                        TextField {
+                            Layout.fillWidth: true
+                            text: settingsModel.sttModel
+                            color: "#E9F4FF"
+                            onEditingFinished: settingsModel.setSttModel(text)
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.preferredWidth: 160
+                        spacing: 4
+
+                        Text {
+                            text: "Language hint"
+                            color: "#7188A7"
+                            font.pixelSize: 11
+                        }
+
+                        TextField {
+                            Layout.fillWidth: true
+                            text: settingsModel.voiceLanguage
+                            placeholderText: "auto"
+                            color: "#E9F4FF"
+                            onEditingFinished: settingsModel.setVoiceLanguage(text)
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    Text {
+                        text: "Endpoint"
+                        color: "#7188A7"
+                        font.pixelSize: 11
+                    }
+
+                    Slider {
+                        id: endpointSlider
+                        Layout.fillWidth: true
+                        from: 0.30
+                        to: 1.20
+                        stepSize: 0.05
+                        value: settingsModel.voiceSilence
+                        onPressedChanged: {
+                            if (!pressed)
+                                settingsModel.setVoiceSilence(value)
+                        }
+                    }
+
+                    Text {
+                        text: Number(endpointSlider.value).toFixed(2) + " s"
+                        color: "#6FC3FF"
+                        font.pixelSize: 12
+                    }
                 }
 
                 Item { Layout.fillHeight: true }
 
-                Text {
-                    text: porter.listening ? "LIVE" : "MUTED"
-                    color: porter.listening ? "#56B9F5" : "#6B7890"
-                    font.pixelSize: 11
-                    font.weight: Font.Bold
-                    font.letterSpacing: 1.2
+                RowLayout {
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: settingsModel.applyStatus
+                        color: settingsModel.applyStatus.indexOf("Could not") === 0
+                            ? "#FF8497"
+                            : "#64BFFF"
+                        font.pixelSize: 11
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    Text {
+                        text: porter.listening ? "LIVE" : "MUTED"
+                        color: porter.listening ? "#56B9F5" : "#6B7890"
+                        font.pixelSize: 11
+                        font.weight: Font.Bold
+                        font.letterSpacing: 1.2
+                    }
                 }
             }
         }
