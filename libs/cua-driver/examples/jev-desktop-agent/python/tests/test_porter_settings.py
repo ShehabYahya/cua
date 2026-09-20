@@ -58,6 +58,13 @@ class PorterSettingsTest(unittest.TestCase):
                 allow_foreground=False,
                 visual_click_mode="permissive",
                 start_at_login=True,
+                global_shortcut_enabled=False,
+                global_shortcut_trigger="CTRL+SHIFT+space",
+                preferred_name="Shehab",
+                accent_color="#6B7CFF",
+                compact_idle_opacity=0.20,
+                compact_hover_opacity=0.80,
+                animations_enabled=False,
             )
             store.save(expected)
             actual = store.load()
@@ -71,6 +78,23 @@ class PorterSettingsTest(unittest.TestCase):
             self.assertFalse(actual.allow_foreground)
             self.assertEqual(actual.visual_click_mode, "permissive")
             self.assertTrue(actual.start_at_login)
+            self.assertFalse(actual.global_shortcut_enabled)
+            self.assertEqual(
+                actual.global_shortcut_trigger,
+                "CTRL+SHIFT+space",
+            )
+            self.assertEqual(actual.preferred_name, "Shehab")
+            self.assertEqual(actual.accent_color, "#6B7CFF")
+            self.assertAlmostEqual(actual.compact_idle_opacity, 0.20)
+            self.assertAlmostEqual(actual.compact_hover_opacity, 0.80)
+            self.assertFalse(actual.animations_enabled)
+
+            shortcut = actual.shortcut_config()
+            self.assertFalse(shortcut.enabled)
+            self.assertEqual(
+                shortcut.preferred_trigger,
+                "CTRL+SHIFT+space",
+            )
 
             runtime = actual.runtime_config()
             self.assertEqual(runtime.visual_click_mode, "permissive")
