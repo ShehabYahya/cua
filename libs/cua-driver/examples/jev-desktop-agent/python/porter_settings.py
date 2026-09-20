@@ -635,10 +635,36 @@ class PorterSettingsModel(QObject):
             else "Changes reverted."
         )
 
+    def _persist_current(self, success_message: str) -> bool:
+        try:
+            self._store.save(self._draft)
+            self._autostart.set_enabled(self._draft.start_at_login)
+        except Exception as error:
+            self._set_apply_status(f"Could not save settings: {error}")
+            return False
+        self._saved = self._draft
+        self._credentials_changed = False
+        if self._dirty:
+            self._dirty = False
+            self.dirtyChanged.emit()
+        self._set_apply_status(success_message)
+        return True
+
     @Slot()
     def apply(self) -> None:
         if self._pending_apply:
             return
+
+        backend_changed = (
+            self._credentials_changed
+            or self._draft.runtime_config() != self._saved.runtime_config()
+            or self._draft.voice_config() != self._saved.voice_config()
+            or self._draft.shortcut_config() != self._saved.shortcut_config()
+        )
+        if not backend_changed:
+            self._persist_current("Settings saved.")
+            return
+
         self._set_apply_status("Applying settings…")
         future = self._worker.reconfigure(
             self._draft.runtime_config(),
@@ -655,20 +681,10 @@ class PorterSettingsModel(QObject):
         if not self._pending_apply:
             return
         self._pending_apply = False
-        try:
-            self._store.save(self._draft)
-            self._autostart.set_enabled(self._draft.start_at_login)
-        except Exception as error:
+        if not self._persist_current("Settings applied."):
             self._set_apply_status(
-                f"Runtime updated, but settings could not be saved: {error}"
+                "Runtime updated, but settings could not be saved."
             )
-            return
-        self._saved = self._draft
-        self._credentials_changed = False
-        if self._dirty:
-            self._dirty = False
-            self.dirtyChanged.emit()
-        self._set_apply_status("Settings applied.")
 
     @Slot(str)
     def _on_reconfigure_failed(self, message: str) -> None:
