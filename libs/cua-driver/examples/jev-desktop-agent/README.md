@@ -315,6 +315,8 @@ The native shell currently provides:
 - a system tray/status icon when the desktop exposes one;
 - a resident backend that survives window hiding and owns Cua/Jev/OpenRouter
   exactly once;
+- single-instance activation: launching Porter again restores the existing
+  resident process instead of starting a second Driver/model/microphone stack;
 - hands-free microphone listening enabled by default;
 - local VAD with short speech pre-roll so fast speech is not clipped;
 - automatic trailing-silence endpointing (0.55 s by default);
@@ -372,9 +374,9 @@ cd ~/cua/libs/cua-driver/examples/jev-desktop-agent
 bash packaging/linux/build-deb.sh 0.1.0
 ```
 
-The build uses Nuitka's PySide6 plugin, bundles the native Python/Qt app and its
-QML/assets, then stages the desktop file, Porter ring icon, and AppStream
-metadata into:
+The build uses the committed `uv.lock` with `uv sync --locked`, then uses
+Nuitka's PySide6 plugin to bundle the native Python/Qt app and its QML/assets.
+It stages the desktop file, Porter ring icon, and AppStream metadata into:
 
 ```text
 dist/porter_0.1.0_<arch>.deb
