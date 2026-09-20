@@ -9,6 +9,7 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
       - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
       - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
+      - "libs/cua-driver/examples/jev-desktop-agent/uv.lock"
       - ".github/workflows/build-porter-deb.yml"
   push:
     paths:
@@ -17,6 +18,7 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
       - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
       - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
+      - "libs/cua-driver/examples/jev-desktop-agent/uv.lock"
       - ".github/workflows/build-porter-deb.yml"
 
 permissions:
