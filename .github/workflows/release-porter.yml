@@ -120,7 +120,8 @@ jobs:
           PRERELEASE: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
         shell: bash
         run: |
-          NOTES="libs/cua-driver/examples/jev-desktop-agent/packaging/RELEASE_NOTES_0.1.0.md"
+          NOTES="libs/cua-driver/examples/jev-desktop-agent/packaging/RELEASE_NOTES_${VERSION}.md"
+          test -f "$NOTES"
           DEB="$(find libs/cua-driver/examples/jev-desktop-agent/dist -maxdepth 1 -name 'porter_*.deb' -print -quit)"
           SUMS="libs/cua-driver/examples/jev-desktop-agent/dist/porter_SHA256SUMS.txt"
 
