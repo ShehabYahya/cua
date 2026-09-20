@@ -12,40 +12,30 @@ from loop import AgentLoop
 
 
 GOAL = (
-    'Open a new tab in Chrome, switch to Text Editor, '
-    'and type "hello from Porter"'
+    "Open Chrome, open a new tab, search the web for Alan Turing, "
+    "and stop when the search results are visible"
 )
 
 
-class CompoundDriver:
+class BundleDriver:
     capture_bound_click = False
     coordinate_click_supported = False
 
     def __init__(self):
-        self.new_tab = False
-        self.typed = False
+        self.results = False
         self.counter = 0
         self.executed = []
+        self.typed_text = None
 
-    def _windows(self):
-        return (
-            {
-                "app_name": "Chrome",
-                "title": "New Tab" if self.new_tab else "Chrome",
-                "pid": 7,
-                "window_id": 9,
-                "is_focused": True,
-                "is_on_screen": True,
-            },
-            {
-                "app_name": "Text Editor",
-                "title": "Notes",
-                "pid": 8,
-                "window_id": 10,
-                "is_focused": False,
-                "is_on_screen": True,
-            },
-        )
+    def _window(self):
+        return {
+            "app_name": "Chrome",
+            "title": "Alan Turing - Search" if self.results else "Chrome",
+            "pid": 7,
+            "window_id": 9,
+            "is_focused": True,
+            "is_on_screen": True,
+        }
 
     async def desktop_overview(
         self,
@@ -53,10 +43,10 @@ class CompoundDriver:
         include_screenshot=True,
         include_apps=True,
     ):
-        return DesktopOverview(self._windows(), ())
+        return DesktopOverview((self._window(),), ())
 
     async def list_windows(self):
-        return list(self._windows())
+        return [self._window()]
 
     async def list_apps(self):
         return []
@@ -77,93 +67,99 @@ class CompoundDriver:
     ):
         self.counter += 1
         snapshot = f"s{self.counter}"
-        if target_window == (8, 10):
+        if self.results:
             return Observation(
                 snapshot,
-                8,
-                10,
-                "Text Editor",
-                "Notes",
+                7,
+                9,
+                "Chrome",
+                "Alan Turing - Search",
                 (
                     Element(
-                        1,
-                        f"{snapshot}:1",
-                        "entry",
-                        "Document",
-                        value="hello from Porter" if self.typed else None,
+                        100001,
+                        None,
+                        "link",
+                        "Alan Turing - Wikipedia",
+                        actions=("click",),
+                        source="browser",
+                        browser_ref="p2:1",
                     ),
                 ),
+                browser_target_id="bt-1",
+                browser_tab_id="tab-1",
             )
-        if target_window != (7, 9):
-            raise AssertionError(f"unexpected target {target_window}")
         return Observation(
             snapshot,
             7,
             9,
             "Chrome",
-            "New Tab" if self.new_tab else "Chrome",
+            "Chrome",
             (
                 Element(
                     1,
                     f"{snapshot}:1",
-                    "push button",
-                    "New Tab",
-                    actions=("click",),
+                    "combo box",
+                    "Address and Search",
                 ),
             ),
         )
 
     async def execute(self, candidate):
         self.executed.append(candidate.id)
-        if candidate.id == "hotkey-new-tab":
-            self.new_tab = True
-        elif candidate.id == "type-focused-text-1":
-            self.typed = True
-        else:
-            raise AssertionError(f"unexpected action {candidate.id}")
+        if candidate.id == "bundle-step-new-tab-type-text-1":
+            self.typed_text = candidate.arguments["text"]
+        if candidate.id == "bundle-step-new-tab-submit-text-1":
+            self.results = True
         return {"effect": "confirmed"}
 
     def with_foreground(self, candidate):
         return candidate
 
 
-class CompoundChooser:
-    async def choose(self, *, observation, candidates, **kwargs):
-        ids = {candidate.id for candidate in candidates}
-        if observation.app == "Chrome" and not observation.window_title.startswith("New Tab"):
-            selected = "hotkey-new-tab"
-        elif observation.app == "Chrome":
-            selected = "switch-window-8-10"
-        elif any(element.value == "hello from Porter" for element in observation.elements):
-            selected = "done"
-        else:
-            selected = "type-focused-text-1"
+class BundleChooser:
+    def __init__(self):
+        self.calls = 0
 
+    async def choose(self, *, observation, candidates, **kwargs):
+        self.calls += 1
+        ids = {candidate.id for candidate in candidates}
+        selected = (
+            "done"
+            if "Search" in observation.window_title
+            else "bundle-browser-new-tab-search-text-1"
+        )
         if selected not in ids:
             raise AssertionError(f"{selected} missing from {sorted(ids)}")
         return Decision(selected, 0.99, {selected: 0.99})
 
 
 class CompoundWorkflowTest(unittest.TestCase):
-    def test_multi_app_goal_uses_explicit_session_switch_without_planner(self):
-        driver = CompoundDriver()
+    def test_compound_goal_executes_local_bundle_from_one_jev_choice(self):
+        driver = BundleDriver()
+        chooser = BundleChooser()
         agent = AgentLoop(
             driver,
-            CompoundChooser(),
-            max_steps=8,
+            chooser,
+            max_steps=4,
         )
         result = asyncio.run(agent.run(GOAL, act=True))
 
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.completed_subgoals, 1)
+        self.assertEqual(chooser.calls, 2)
+        self.assertEqual(driver.typed_text, "Alan Turing")
         self.assertEqual(
             driver.executed,
-            ["hotkey-new-tab", "type-focused-text-1"],
+            [
+                "bundle-step-new-tab-text-1",
+                "bundle-step-new-tab-address-text-1",
+                "bundle-step-new-tab-type-text-1",
+                "bundle-step-new-tab-submit-text-1",
+            ],
         )
-        self.assertTrue(driver.typed)
-        self.assertIn(
-            "switch-window-8-10",
-            [step.selected_id for step in result.steps],
+        self.assertEqual(
+            result.steps[0].selected_id,
+            "bundle-browser-new-tab-search-text-1",
         )
         self.assertEqual(len(result.plan.steps), 1)
 
