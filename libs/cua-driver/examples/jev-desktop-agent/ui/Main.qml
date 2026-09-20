@@ -71,6 +71,7 @@ ApplicationWindow {
                                 height: 42
                                 state: porter.state
                                 listening: porter.state === "listening"
+                                accent: settingsModel.accentColor
                             }
 
                             Column {
@@ -100,6 +101,7 @@ ApplicationWindow {
                             "Voice & Audio",
                             "Models",
                             "Computer Control",
+                            "Shortcuts",
                             "Personalization",
                             "Appearance",
                             "Advanced"
@@ -161,6 +163,7 @@ ApplicationWindow {
                                 height: 32
                                 state: porter.state
                                 listening: porter.state === "listening"
+                                accent: settingsModel.accentColor
                             }
 
                             Column {
@@ -212,7 +215,9 @@ ApplicationWindow {
                                     Layout.fillWidth: true
 
                                     Text {
-                                        text: "Good to see you"
+                                        text: settingsModel.preferredName.length
+                                            ? "Good to see you, " + settingsModel.preferredName
+                                            : "Good to see you"
                                         color: "#F2F7FF"
                                         font.pixelSize: 31
                                         font.weight: Font.DemiBold
@@ -446,14 +451,10 @@ ApplicationWindow {
                     ComputerPage {
                     }
 
-                    PlaceholderPage {
-                        pageTitle: "Personalization"
-                        pageDescription: "Porter behavior, preferred interaction style and personal defaults."
+                    PersonalizationPage {
                     }
 
-                    PlaceholderPage {
-                        pageTitle: "Appearance"
-                        pageDescription: "Aurora Dark controls: opacity, glow intensity, accent and compact-bar behavior."
+                    AppearancePage {
                     }
 
                     PlaceholderPage {
