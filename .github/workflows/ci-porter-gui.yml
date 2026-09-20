@@ -48,6 +48,10 @@ jobs:
         with:
           version: "0.8.15"
           enable-cache: true
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0
       - name: Install native GUI dependencies
         run: uv sync --extra gui
       - name: Compile Porter Python sources
