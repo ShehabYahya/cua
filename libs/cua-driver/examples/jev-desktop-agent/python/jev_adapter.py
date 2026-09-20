@@ -375,7 +375,11 @@ class OpenRouterChooser:
             client.close()
 
 
-def chooser_from_env(provider: str = "auto") -> TypeSafeChooser | OpenRouterChooser:
+def chooser_from_env(
+    provider: str = "auto",
+    *,
+    model: str | None = None,
+) -> TypeSafeChooser | OpenRouterChooser:
     if provider not in {"auto", "openrouter", "typesafe"}:
         raise ValueError("provider must be auto, openrouter, or typesafe")
 
@@ -384,7 +388,11 @@ def chooser_from_env(provider: str = "auto") -> TypeSafeChooser | OpenRouterChoo
         if key:
             return OpenRouterChooser(
                 key,
-                model=os.getenv("JEV_MODEL", "").strip() or OPENROUTER_MODEL,
+                model=(
+                    (model or "").strip()
+                    or os.getenv("JEV_MODEL", "").strip()
+                    or OPENROUTER_MODEL
+                ),
             )
         if provider == "openrouter":
             raise ValueError("set OPENROUTER_API_KEY in the environment")
