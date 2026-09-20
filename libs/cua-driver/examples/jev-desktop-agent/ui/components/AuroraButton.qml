@@ -4,6 +4,8 @@ import QtQuick.Controls
 Button {
     id: root
     property bool primary: false
+    property color accent: typeof settingsModel !== "undefined" ? settingsModel.accentColor : "#188AD9"
+    property bool animationsEnabled: typeof settingsModel !== "undefined" ? settingsModel.animationsEnabled : true
 
     implicitHeight: 42
     leftPadding: 16
@@ -24,17 +26,17 @@ Button {
             if (!root.enabled)
                 return Qt.rgba(0.09, 0.14, 0.22, 0.45)
             if (root.down)
-                return root.primary ? "#147DCE" : Qt.rgba(0.13, 0.22, 0.34, 0.95)
+                return root.primary ? Qt.darker(root.accent, 1.20) : Qt.rgba(0.13, 0.22, 0.34, 0.95)
             if (root.hovered)
-                return root.primary ? "#249AEE" : Qt.rgba(0.12, 0.20, 0.31, 0.92)
-            return root.primary ? "#188AD9" : Qt.rgba(0.08, 0.14, 0.23, 0.80)
+                return root.primary ? Qt.lighter(root.accent, 1.12) : Qt.rgba(0.12, 0.20, 0.31, 0.92)
+            return root.primary ? root.accent : Qt.rgba(0.08, 0.14, 0.23, 0.80)
         }
         border.width: 1
         border.color: root.primary
-            ? Qt.rgba(0.40, 0.76, 1.0, 0.55)
+            ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.55)
             : Qt.rgba(0.35, 0.64, 0.95, 0.14)
 
-        Behavior on color { ColorAnimation { duration: 120 } }
-        Behavior on border.color { ColorAnimation { duration: 120 } }
+        Behavior on color { enabled: root.animationsEnabled; ColorAnimation { duration: 120 } }
+        Behavior on border.color { enabled: root.animationsEnabled; ColorAnimation { duration: 120 } }
     }
 }
