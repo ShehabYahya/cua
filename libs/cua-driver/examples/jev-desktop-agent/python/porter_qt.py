@@ -95,6 +95,10 @@ class PorterRuntimeThread(QThread):
             self._loop = None
             self.stopped.emit()
 
+    @property
+    def voice_config(self) -> HandsFreeVoiceConfig:
+        return self._voice_config
+
     def _forward_event(self, event: RuntimeEvent) -> None:
         self.eventReceived.emit(event)
 
@@ -223,6 +227,7 @@ class PorterViewModel(QObject):
         self._mic_level = 0.0
         self._transcript = ""
         self._last_command = ""
+        self._voice_silence_seconds = worker.voice_config.silence_seconds
 
         worker.eventReceived.connect(self._on_runtime_event)
         worker.runtimeReady.connect(self._on_runtime_ready)
@@ -257,6 +262,10 @@ class PorterViewModel(QObject):
     @Property(str, notify=transcriptChanged)
     def transcript(self) -> str:
         return self._transcript
+
+    @Property(float, constant=True)
+    def voiceSilenceSeconds(self) -> float:
+        return self._voice_silence_seconds
 
     @Property(str, notify=lastCommandChanged)
     def lastCommand(self) -> str:
@@ -433,6 +442,7 @@ class PorterViewModel(QObject):
                 self._set_state("attention")
                 self._set_status(status.replace("_", " ").title())
             self._set_detail(event.message)
+            self._set_mic_level(0.0)
         elif kind in {"command_failed", "runtime_failed"}:
             self._set_busy(False)
             self._set_state("error")
