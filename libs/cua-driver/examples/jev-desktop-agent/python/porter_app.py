@@ -7,11 +7,12 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QTimer, QUrl
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from global_shortcuts import APP_ID
 from openrouter_client import (
     DEFAULT_REASONING_MODEL,
     DEFAULT_STT_MODEL,
@@ -151,6 +152,8 @@ def main() -> int:
     QCoreApplication.setOrganizationName("Porter")
     QCoreApplication.setOrganizationDomain("porter.local")
     QCoreApplication.setApplicationName("Porter")
+    QCoreApplication.setApplicationVersion("0.1.0")
+    QGuiApplication.setDesktopFileName(APP_ID)
     QQuickStyle.setStyle("Basic")
 
     app = QApplication(sys.argv[:1])
@@ -196,11 +199,16 @@ def main() -> int:
     worker = PorterRuntimeThread(
         initial.runtime_config(),
         initial.voice_config(),
+        initial.shortcut_config(),
     )
     porter = PorterViewModel(worker)
-    autostart = AutostartManager(
-        [sys.executable, str(HERE / "porter_app.py")]
+    entry = Path(sys.argv[0]).resolve()
+    autostart_command = (
+        [sys.executable, str(entry)]
+        if entry.suffix.casefold() == ".py"
+        else [str(entry)]
     )
+    autostart = AutostartManager(autostart_command)
     settings_model = PorterSettingsModel(
         worker,
         store=settings_store,
@@ -225,6 +233,9 @@ def main() -> int:
     )
     porter.showMainRequested.connect(
         lambda: _show_window(main_window)
+    )
+    worker.shortcutActivated.connect(
+        lambda: _toggle_window(compact_window)
     )
 
     tray = None
