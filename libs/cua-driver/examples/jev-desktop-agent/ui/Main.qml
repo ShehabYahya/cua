@@ -16,6 +16,7 @@ ApplicationWindow {
     color: "#07101F"
 
     property int currentPage: 0
+    property color accent: settingsModel.accentColor
 
     onClosing: function(close) {
         close.accepted = false
@@ -116,9 +117,9 @@ ApplicationWindow {
                             radius: 12
                             color: root.currentPage === index
                                 ? Qt.rgba(
-                                    settingsModel.accentColor.r,
-                                    settingsModel.accentColor.g,
-                                    settingsModel.accentColor.b,
+                                    root.accent.r,
+                                    root.accent.g,
+                                    root.accent.b,
                                     0.22
                                 )
                                 : navHover.hovered
@@ -126,9 +127,9 @@ ApplicationWindow {
                                     : "transparent"
                             border.width: root.currentPage === index ? 1 : 0
                             border.color: Qt.rgba(
-                                settingsModel.accentColor.r,
-                                settingsModel.accentColor.g,
-                                settingsModel.accentColor.b,
+                                root.accent.r,
+                                root.accent.g,
+                                root.accent.b,
                                 0.35
                             )
 
