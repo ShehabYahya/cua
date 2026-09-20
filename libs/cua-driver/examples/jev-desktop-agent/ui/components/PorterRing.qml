@@ -4,7 +4,8 @@ Item {
     id: root
     property string state: "ready"
     property bool listening: false
-    property color accent: "#49A7FF"
+    property color accent: typeof settingsModel !== "undefined" ? settingsModel.accentColor : "#49A7FF"
+    property bool animationsEnabled: typeof settingsModel !== "undefined" ? settingsModel.animationsEnabled : true
     property color errorAccent: "#FF647C"
     property color attentionAccent: "#FFB85C"
 
@@ -69,13 +70,13 @@ Item {
             to: 360
             duration: root.listening ? 900 : 1500
             loops: Animation.Infinite
-            running: root.state === "working" || root.listening
+            running: root.animationsEnabled && (root.state === "working" || root.listening)
         }
     }
 
     SequentialAnimation on scale {
         loops: Animation.Infinite
-        running: root.listening
+        running: root.animationsEnabled && root.listening
         NumberAnimation { to: 1.08; duration: 420; easing.type: Easing.InOutSine }
         NumberAnimation { to: 1.0; duration: 420; easing.type: Easing.InOutSine }
     }
