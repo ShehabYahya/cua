@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from contracts import Plan, PlanStep
+from contracts import DesktopOverview, Plan, PlanStep
 from events import RuntimeEvent, RuntimeEventBus
 from loop import RunResult
 from runtime import PorterRuntime, PorterRuntimeConfig
@@ -33,6 +33,34 @@ class FakeDriver:
 
     async def __aexit__(self, exc_type, exc, tb):
         self.exited = True
+
+    async def health_warnings(self):
+        return ("demo warning",)
+
+    def capability_limitations(self):
+        return ("demo limitation",)
+
+    def capability_summary(self):
+        return {
+            "native_observation": {"list_windows": True},
+            "input": {"coordinate_click_supported": True},
+        }
+
+    async def desktop_overview(
+        self,
+        *,
+        include_screenshot=True,
+        include_apps=True,
+    ):
+        return DesktopOverview(
+            windows=(
+                {"pid": 7, "window_id": 9, "app_name": "Demo"},
+            ),
+            apps=(
+                {"name": "Demo"},
+                {"name": "Other"},
+            ) if include_apps else (),
+        )
 
 
 class FakeAgent:
@@ -65,6 +93,45 @@ class RuntimeTest(unittest.TestCase):
         bus.subscribe(seen.append)
         bus.emit(RuntimeEvent("ready", "ok"))
         self.assertEqual([event.kind for event in seen], ["ready"])
+
+    def test_diagnostics_use_the_resident_driver(self):
+        chooser = FakeChooser()
+        driver = FakeDriver()
+
+        async def scenario():
+            runtime = PorterRuntime(
+                PorterRuntimeConfig(
+                    provider="typesafe",
+                    vision_enabled=False,
+                    visual_click_mode="permissive",
+                    enforce_policy=True,
+                ),
+                chooser_factory=lambda provider, model=None: chooser,
+                driver_factory=lambda: driver,
+                agent_factory=FakeAgent,
+            )
+            await runtime.start()
+            payload = await runtime.diagnostics()
+            await runtime.stop()
+            return payload
+
+        with patch.dict(
+            "os.environ",
+            {"TYPESAFE_API_KEY": "test", "OPENROUTER_API_KEY": ""},
+            clear=False,
+        ):
+            payload = asyncio.run(scenario())
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["visible_windows"], 1)
+        self.assertEqual(payload["known_apps"], 2)
+        self.assertEqual(payload["visual_click_mode"], "permissive")
+        self.assertTrue(payload["policy_enabled"])
+        self.assertIn("demo warning", payload["warnings"])
+        self.assertIn("demo limitation", payload["limitations"])
+        self.assertTrue(
+            payload["capabilities"]["native_observation"]["list_windows"]
+        )
 
     def test_runtime_owns_backend_once_and_emits_command_events(self):
         events = []
