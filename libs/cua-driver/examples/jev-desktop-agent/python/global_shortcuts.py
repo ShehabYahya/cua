@@ -8,6 +8,8 @@ from typing import Callable
 from dbus_next import Message, MessageType, Variant
 from dbus_next.aio import MessageBus
 
+from version import APP_ID
+
 
 PORTAL_NAME = "org.freedesktop.portal.Desktop"
 PORTAL_PATH = "/org/freedesktop/portal/desktop"
@@ -16,7 +18,6 @@ REQUEST_IFACE = "org.freedesktop.portal.Request"
 SESSION_IFACE = "org.freedesktop.portal.Session"
 REGISTRY_IFACE = "org.freedesktop.host.portal.Registry"
 
-APP_ID = "io.github.shehabyahya.Porter"
 SHORTCUT_ID = "toggle-quick-bar"
 
 
