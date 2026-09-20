@@ -114,6 +114,15 @@ jobs:
           assert "jobs" in payload
           assert "release" in payload["jobs"]
           PY
+      - name: Verify Porter version
+        run: |
+          uv run --extra gui python python/porter_app.py --version | grep -q '^Porter 0.1.0        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          OPENROUTER_API_KEY: ""
+          TYPESAFE_API_KEY: ""
+        run: uv run --extra gui python python/porter_app.py --smoke-test
+
       - name: Load Aurora Dark QML offscreen
         env:
           QT_QPA_PLATFORM: offscreen
