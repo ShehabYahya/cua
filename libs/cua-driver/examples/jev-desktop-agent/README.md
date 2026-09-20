@@ -291,13 +291,13 @@ It does **not** run a local web server and does not embed HTML.
 Install the GUI extra:
 
 ```bash
-uv sync --extra gui
+uv sync --extra app
 ```
 
 Launch Porter:
 
 ```bash
-uv run --extra gui python python/porter_app.py
+uv run --extra app python python/porter_app.py
 ```
 
 The native shell currently provides:
@@ -310,10 +310,18 @@ The native shell currently provides:
 - hide-on-close behavior for the main/compact windows;
 - a system tray/status icon when the desktop exposes one;
 - a resident backend that survives window hiding and owns Cua/Jev/OpenRouter
-  exactly once.
+  exactly once;
+- hands-free microphone listening enabled by default;
+- local VAD with short speech pre-roll so fast speech is not clipped;
+- automatic trailing-silence endpointing (0.55 s by default);
+- STT submission without pressing a microphone button or Enter;
+- spoken "stop"/"cancel"/"never mind" cancellation while Porter is working;
+- live listening, microphone level, transcription and command state in QML.
 
-The microphone control is intentionally a UI/state placeholder in this chunk.
-The next GUI chunk replaces it with the persistent hands-free VAD/STT service.
+Hands-free listening requires `OPENROUTER_API_KEY` for transcription. Silence is
+processed locally; only detected utterances are sent to STT. Start muted with
+`--no-hands-free`, or toggle listening from the Porter tray menu or Voice &
+Audio page.
 
 For a headless QML load check:
 
