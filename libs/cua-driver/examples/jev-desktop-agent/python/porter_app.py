@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QTimer, QUrl
@@ -16,8 +17,12 @@ from openrouter_client import (
     DEFAULT_STT_MODEL,
 )
 from porter_qt import PorterRuntimeThread, PorterViewModel
-from porter_voice import HandsFreeVoiceConfig
-from runtime import PorterRuntimeConfig
+from porter_settings import (
+    AutostartManager,
+    PorterSettingsModel,
+    PorterSettingsStore,
+    SecretStore,
+)
 
 
 HERE = Path(__file__).resolve().parent
@@ -106,6 +111,14 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def _explicit_option(name: str) -> bool:
+    prefix = name + "="
+    return any(
+        argument == name or argument.startswith(prefix)
+        for argument in sys.argv[1:]
+    )
+
+
 def _find_root(engine: QQmlApplicationEngine, name: str):
     for item in engine.rootObjects():
         if item.objectName() == name:
@@ -147,26 +160,57 @@ def main() -> int:
     icon = QIcon(str(ASSETS_DIR / "porter-ring.svg"))
     app.setWindowIcon(icon)
 
-    config = PorterRuntimeConfig(
-        provider=args.provider,
-        vision_enabled=not args.no_vision,
-        vision_model=args.vision_model,
-        writer_model=args.writer_model,
-        download_root=args.download_root,
-        enforce_policy=args.confirm_actions,
+    settings_store = PorterSettingsStore()
+    secret_store = SecretStore()
+    secret_store.apply_to_environment()
+    initial = settings_store.load()
+
+    # Native settings are authoritative after the first save, while explicit
+    # launch flags remain useful for development and one-off overrides.
+    overrides = {}
+    if _explicit_option("--provider") or "PORTER_PROVIDER" in os.environ:
+        overrides["provider"] = args.provider
+    if _explicit_option("--no-vision") or "PORTER_NO_VISION" in os.environ:
+        overrides["vision_enabled"] = not args.no_vision
+    if _explicit_option("--vision-model") or "PORTER_VISION_MODEL" in os.environ:
+        overrides["vision_model"] = args.vision_model
+    if _explicit_option("--writer-model") or "PORTER_WRITER_MODEL" in os.environ:
+        overrides["writer_model"] = args.writer_model
+    if _explicit_option("--download-root") or "PORTER_DOWNLOAD_ROOT" in os.environ:
+        overrides["download_root"] = args.download_root or ""
+    if _explicit_option("--confirm-actions") or "PORTER_CONFIRM_ACTIONS" in os.environ:
+        overrides["confirm_actions"] = args.confirm_actions
+    if _explicit_option("--no-hands-free") or "PORTER_HANDS_FREE" in os.environ:
+        overrides["hands_free"] = not args.no_hands_free
+    if _explicit_option("--voice-silence") or "PORTER_VOICE_SILENCE" in os.environ:
+        overrides["voice_silence"] = args.voice_silence
+    if _explicit_option("--voice-language") or "PORTER_VOICE_LANGUAGE" in os.environ:
+        overrides["voice_language"] = args.voice_language or ""
+    if _explicit_option("--stt-model") or "PORTER_STT_MODEL" in os.environ:
+        overrides["stt_model"] = args.stt_model
+    if _explicit_option("--mic") or "PORTER_MIC" in os.environ:
+        overrides["microphone_device"] = args.mic
+    if overrides:
+        initial = replace(initial, **overrides)
+
+    worker = PorterRuntimeThread(
+        initial.runtime_config(),
+        initial.voice_config(),
     )
-    voice_config = HandsFreeVoiceConfig(
-        enabled=not args.no_hands_free,
-        stt_model=args.stt_model,
-        language=args.voice_language,
-        microphone_device=args.mic,
-        silence_seconds=args.voice_silence,
-    )
-    worker = PorterRuntimeThread(config, voice_config)
     porter = PorterViewModel(worker)
+    autostart = AutostartManager(
+        [sys.executable, str(HERE / "porter_app.py")]
+    )
+    settings_model = PorterSettingsModel(
+        worker,
+        store=settings_store,
+        secrets=secret_store,
+        autostart=autostart,
+    )
 
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("porter", porter)
+    engine.rootContext().setContextProperty("settingsModel", settings_model)
     engine.load(QUrl.fromLocalFile(str(UI_DIR / "Main.qml")))
     engine.load(QUrl.fromLocalFile(str(UI_DIR / "CompactBar.qml")))
 
@@ -258,7 +302,16 @@ def main() -> int:
     exit_code = app.exec()
 
     # Keep references alive until after the Qt event loop is gone.
-    _ = (tray, engine, porter, worker)
+    _ = (
+        tray,
+        engine,
+        porter,
+        worker,
+        settings_model,
+        settings_store,
+        secret_store,
+        autostart,
+    )
     return int(exit_code)
 
 
