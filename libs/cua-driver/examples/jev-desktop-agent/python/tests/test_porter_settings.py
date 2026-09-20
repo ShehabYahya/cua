@@ -10,7 +10,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import QSettings
+try:
+    from PySide6.QtCore import QSettings
+except ModuleNotFoundError as error:
+    raise unittest.SkipTest(
+        "PySide6 is an optional native-GUI dependency"
+    ) from error
 
 from porter_settings import (
     AutostartManager,
