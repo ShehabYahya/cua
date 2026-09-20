@@ -72,8 +72,9 @@ class RuntimeTest(unittest.TestCase):
         driver = FakeDriver()
         agents = []
 
-        def chooser_factory(provider):
+        def chooser_factory(provider, *, model=None):
             self.assertEqual(provider, "openrouter")
+            self.assertIsNone(model)
             return chooser
 
         def driver_factory():
