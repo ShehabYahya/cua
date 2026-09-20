@@ -278,6 +278,7 @@ class PorterSettingsModel(QObject):
         self._autostart = autostart
         self._saved = store.load()
         self._draft = self._saved
+        self._credentials_changed = False
         self._dirty = False
         self._apply_status = ""
         self._pending_apply = False
@@ -291,7 +292,7 @@ class PorterSettingsModel(QObject):
             return
         self._draft = updated
         self.settingsChanged.emit()
-        dirty = updated != self._saved
+        dirty = updated != self._saved or self._credentials_changed
         if dirty != self._dirty:
             self._dirty = dirty
             self.dirtyChanged.emit()
@@ -443,8 +444,14 @@ class PorterSettingsModel(QObject):
             self._set_apply_status(f"Could not store credential: {error}")
             return
         os.environ[name] = cleaned
+        self._credentials_changed = True
+        if not self._dirty:
+            self._dirty = True
+            self.dirtyChanged.emit()
         self.credentialsChanged.emit()
-        self._set_apply_status("Credential stored securely.")
+        self._set_apply_status(
+            "Credential stored securely. Apply to restart the backend with it."
+        )
 
     @Slot(str)
     def saveOpenRouterKey(self, value: str) -> None:
@@ -458,23 +465,42 @@ class PorterSettingsModel(QObject):
     def clearOpenRouterKey(self) -> None:
         self._secrets.delete(SecretStore.OPENROUTER)
         os.environ.pop(SecretStore.OPENROUTER, None)
+        self._credentials_changed = True
+        if not self._dirty:
+            self._dirty = True
+            self.dirtyChanged.emit()
         self.credentialsChanged.emit()
-        self._set_apply_status("OpenRouter credential cleared.")
+        self._set_apply_status(
+            "OpenRouter credential cleared. Apply to restart the backend."
+        )
 
     @Slot()
     def clearTypeSafeKey(self) -> None:
         self._secrets.delete(SecretStore.TYPESAFE)
         os.environ.pop(SecretStore.TYPESAFE, None)
+        self._credentials_changed = True
+        if not self._dirty:
+            self._dirty = True
+            self.dirtyChanged.emit()
         self.credentialsChanged.emit()
-        self._set_apply_status("TypeSafe credential cleared.")
+        self._set_apply_status(
+            "TypeSafe credential cleared. Apply to restart the backend."
+        )
 
     @Slot()
     def revert(self) -> None:
         self._draft = self._saved
-        self._dirty = False
+        dirty = self._credentials_changed
+        changed = dirty != self._dirty
+        self._dirty = dirty
         self.settingsChanged.emit()
-        self.dirtyChanged.emit()
-        self._set_apply_status("Changes reverted.")
+        if changed:
+            self.dirtyChanged.emit()
+        self._set_apply_status(
+            "Non-secret changes reverted."
+            if self._credentials_changed
+            else "Changes reverted."
+        )
 
     @Slot()
     def apply(self) -> None:
@@ -504,6 +530,7 @@ class PorterSettingsModel(QObject):
             )
             return
         self._saved = self._draft
+        self._credentials_changed = False
         if self._dirty:
             self._dirty = False
             self.dirtyChanged.emit()
