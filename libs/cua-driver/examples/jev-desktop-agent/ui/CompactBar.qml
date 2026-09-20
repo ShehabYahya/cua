@@ -19,7 +19,12 @@ Window {
     property bool engaged: porter.busy
         || porter.state === "listening"
         || commandField.activeFocus
-    property real panelOpacity: engaged ? 0.92 : hovered ? 0.72 : 0.26
+    property color accent: settingsModel.accentColor
+    property real panelOpacity: engaged
+        ? 0.92
+        : hovered
+            ? settingsModel.compactHoverOpacity
+            : settingsModel.compactIdleOpacity
 
     onClosing: function(close) {
         close.accepted = false
@@ -31,7 +36,12 @@ Window {
         anchors.fill: panel
         anchors.margins: -5
         radius: panel.radius + 5
-        color: Qt.rgba(0.0, 0.25, 0.55, root.engaged ? 0.16 : root.hovered ? 0.10 : 0.03)
+        color: Qt.rgba(
+            root.accent.r,
+            root.accent.g,
+            root.accent.b,
+            root.engaged ? 0.16 : root.hovered ? 0.10 : 0.03
+        )
     }
 
     Rectangle {
@@ -42,15 +52,17 @@ Window {
         color: Qt.rgba(0.025, 0.065, 0.13, root.panelOpacity)
         border.width: 1
         border.color: root.engaged
-            ? Qt.rgba(0.25, 0.67, 1.0, 0.72)
+            ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.72)
             : root.hovered
-                ? Qt.rgba(0.25, 0.67, 1.0, 0.38)
-                : Qt.rgba(0.28, 0.62, 0.95, 0.08)
+                ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.38)
+                : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.08)
 
         Behavior on color {
+            enabled: settingsModel.animationsEnabled
             ColorAnimation { duration: 150 }
         }
         Behavior on border.color {
+            enabled: settingsModel.animationsEnabled
             ColorAnimation { duration: 150 }
         }
 
@@ -67,6 +79,7 @@ Window {
                 Layout.preferredHeight: 38
                 state: porter.state
                 listening: porter.state === "listening"
+                accent: settingsModel.accentColor
             }
 
             TextField {
@@ -105,7 +118,7 @@ Window {
 
                 contentItem: Text {
                     text: voiceButton.text
-                    color: porter.listening ? "#5FC4FF" : "#8AA3C2"
+                    color: porter.listening ? settingsModel.accentColor : "#8AA3C2"
                     font.pixelSize: porter.listening ? 18 : 17
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
