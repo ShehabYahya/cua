@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,6 +42,8 @@ class PorterRuntimeThread(QThread):
     reconfigureFailed = Signal(str)
     shortcutActivated = Signal()
     shortcutStatusChanged = Signal(str)
+    diagnosticsReady = Signal(object)
+    diagnosticsFailed = Signal(str)
     stopped = Signal()
 
     def __init__(
@@ -278,6 +281,31 @@ class PorterRuntimeThread(QThread):
         return future
 
     @Slot()
+    def requestDiagnostics(self) -> None:
+        runtime = self._runtime
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            self.diagnosticsFailed.emit("Porter worker is not running.")
+            return
+
+        async def collect():
+            if runtime is not None and runtime.started:
+                return await runtime.diagnostics()
+            return await PorterRuntime.preflight()
+
+        future = asyncio.run_coroutine_threadsafe(collect(), loop)
+
+        def finished(done: concurrent.futures.Future) -> None:
+            try:
+                payload = done.result()
+            except Exception as error:
+                self.diagnosticsFailed.emit(str(error))
+                return
+            self.diagnosticsReady.emit(payload)
+
+        future.add_done_callback(finished)
+
+    @Slot()
     def cancel(self) -> None:
         runtime = self._runtime
         loop = self._loop
@@ -326,6 +354,7 @@ class PorterViewModel(QObject):
     transcriptChanged = Signal()
     lastCommandChanged = Signal()
     shortcutStatusChanged = Signal()
+    diagnosticsChanged = Signal()
 
     toggleCompactRequested = Signal()
     showMainRequested = Signal()
@@ -347,6 +376,10 @@ class PorterViewModel(QObject):
         self._transcript = ""
         self._last_command = ""
         self._shortcut_status = "Global shortcut starting…"
+        self._diagnostics_status = "Not checked"
+        self._diagnostics_summary = "Run diagnostics to inspect Cua and Porter."
+        self._diagnostics_details = ""
+        self._diagnostics_running = False
         self._voice_silence_seconds = worker.voice_config.silence_seconds
 
         worker.eventReceived.connect(self._on_runtime_event)
@@ -355,6 +388,8 @@ class PorterViewModel(QObject):
         worker.commandFinished.connect(self._on_command_finished)
         worker.commandFailed.connect(self._on_command_failed)
         worker.shortcutStatusChanged.connect(self._on_shortcut_status)
+        worker.diagnosticsReady.connect(self._on_diagnostics_ready)
+        worker.diagnosticsFailed.connect(self._on_diagnostics_failed)
 
     @Property(str, notify=stateChanged)
     def state(self) -> str:
@@ -395,6 +430,22 @@ class PorterViewModel(QObject):
     @Property(str, notify=shortcutStatusChanged)
     def shortcutStatus(self) -> str:
         return self._shortcut_status
+
+    @Property(str, notify=diagnosticsChanged)
+    def diagnosticsStatus(self) -> str:
+        return self._diagnostics_status
+
+    @Property(str, notify=diagnosticsChanged)
+    def diagnosticsSummary(self) -> str:
+        return self._diagnostics_summary
+
+    @Property(str, notify=diagnosticsChanged)
+    def diagnosticsDetails(self) -> str:
+        return self._diagnostics_details
+
+    @Property(bool, notify=diagnosticsChanged)
+    def diagnosticsRunning(self) -> bool:
+        return self._diagnostics_running
 
     def _set_state(self, value: str) -> None:
         if value == self._state:
@@ -468,6 +519,17 @@ class PorterViewModel(QObject):
     @Slot(bool)
     def setListening(self, enabled: bool) -> None:
         self._worker.setListening(bool(enabled))
+
+    @Slot()
+    def refreshDiagnostics(self) -> None:
+        if self._diagnostics_running:
+            return
+        self._diagnostics_running = True
+        self._diagnostics_status = "Checking…"
+        self._diagnostics_summary = "Reading Cua Driver health and capabilities."
+        self._diagnostics_details = ""
+        self.diagnosticsChanged.emit()
+        self._worker.requestDiagnostics()
 
     @Slot()
     def toggleCompact(self) -> None:
@@ -619,3 +681,68 @@ class PorterViewModel(QObject):
             return
         self._shortcut_status = message
         self.shortcutStatusChanged.emit()
+
+    @Slot(object)
+    def _on_diagnostics_ready(self, payload: Any) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        warnings = list(data.get("warnings") or [])
+        limitations = list(data.get("limitations") or [])
+        status = str(data.get("status") or "ok")
+        windows = int(data.get("visible_windows") or 0)
+        apps = int(data.get("known_apps") or 0)
+        capabilities = data.get("capabilities") or {}
+
+        self._diagnostics_running = False
+        self._diagnostics_status = (
+            "Healthy" if status == "ok" else "Needs attention"
+        )
+        self._diagnostics_summary = (
+            f"{windows} visible window(s), {apps} known app(s), "
+            f"{len(warnings)} health warning(s), "
+            f"{len(limitations)} limitation(s)."
+        )
+
+        lines = []
+        if warnings:
+            lines.append("Warnings:")
+            lines.extend(f"• {item}" for item in warnings)
+        if limitations:
+            if lines:
+                lines.append("")
+            lines.append("Limitations:")
+            lines.extend(f"• {item}" for item in limitations)
+        if capabilities:
+            if lines:
+                lines.append("")
+            lines.append("Capabilities:")
+            lines.append(
+                json.dumps(
+                    capabilities,
+                    indent=2,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        for key, label in (
+            ("provider", "Provider"),
+            ("jev_model", "Jev model"),
+            ("visual_click_mode", "Visual clicks"),
+            ("platform", "Platform"),
+            ("python", "Python"),
+        ):
+            value = data.get(key)
+            if value not in {None, ""}:
+                if not lines:
+                    lines.append("Runtime:")
+                lines.append(f"{label}: {value}")
+
+        self._diagnostics_details = "\n".join(lines)
+        self.diagnosticsChanged.emit()
+
+    @Slot(str)
+    def _on_diagnostics_failed(self, message: str) -> None:
+        self._diagnostics_running = False
+        self._diagnostics_status = "Unavailable"
+        self._diagnostics_summary = message or "Diagnostics could not run."
+        self._diagnostics_details = ""
+        self.diagnosticsChanged.emit()
