@@ -436,60 +436,34 @@ ApplicationWindow {
                         }
                     }
 
-                    Repeater {
-                        model: [
-                            ["Voice & Audio", "Hands-free listening, microphone endpointing and spoken feedback are wired in the next chunk."],
-                            ["Models", "Provider, Jev, vision and writer settings will live here."],
-                            ["Computer Control", "Cua health, foreground permission, visual click mode and download boundaries."],
-                            ["Personalization", "Porter behavior, preferred interaction style and personal defaults."],
-                            ["Appearance", "Aurora Dark controls: opacity, glow intensity, accent and compact-bar behavior."],
-                            ["Advanced", "Capabilities, diagnostics, runtime logs and developer options."]
-                        ]
+                    PlaceholderPage {
+                        pageTitle: "Voice & Audio"
+                        pageDescription: "Hands-free listening, microphone endpointing and spoken feedback are wired in the next chunk."
+                    }
 
-                        delegate: Item {
-                            required property var modelData
+                    PlaceholderPage {
+                        pageTitle: "Models"
+                        pageDescription: "Provider, Jev, vision and writer settings will live here."
+                    }
 
-                            ColumnLayout {
-                                anchors.fill: parent
-                                spacing: 20
+                    PlaceholderPage {
+                        pageTitle: "Computer Control"
+                        pageDescription: "Cua health, foreground permission, visual click mode and download boundaries."
+                    }
 
-                                Text {
-                                    text: modelData[0]
-                                    color: "#F2F7FF"
-                                    font.pixelSize: 30
-                                    font.weight: Font.DemiBold
-                                }
+                    PlaceholderPage {
+                        pageTitle: "Personalization"
+                        pageDescription: "Porter behavior, preferred interaction style and personal defaults."
+                    }
 
-                                AuroraCard {
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: 170
+                    PlaceholderPage {
+                        pageTitle: "Appearance"
+                        pageDescription: "Aurora Dark controls: opacity, glow intensity, accent and compact-bar behavior."
+                    }
 
-                                    ColumnLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 22
-                                        spacing: 10
-
-                                        Text {
-                                            text: modelData[1]
-                                            color: "#8CA3BF"
-                                            font.pixelSize: 14
-                                            wrapMode: Text.Wrap
-                                            Layout.fillWidth: true
-                                        }
-
-                                        Item { Layout.fillHeight: true }
-
-                                        Text {
-                                            text: "Native settings page scaffold"
-                                            color: "#4A9FE0"
-                                            font.pixelSize: 12
-                                        }
-                                    }
-                                }
-
-                                Item { Layout.fillHeight: true }
-                            }
-                        }
+                    PlaceholderPage {
+                        pageTitle: "Advanced"
+                        pageDescription: "Capabilities, diagnostics, runtime logs and developer options."
                     }
                 }
             }
