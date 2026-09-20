@@ -78,15 +78,7 @@ jobs:
           mkdir -p /tmp/porter-deb-check
           DEB="$(find dist -maxdepth 1 -name 'porter_0.1.0_*.deb' -print -quit)"
           dpkg-deb -x "$DEB" /tmp/porter-deb-check
-          /tmp/porter-deb-check/opt/porter/porter --version | grep -q '^Porter 0.1.0
-      - name: Upload deb
-        uses: actions/upload-artifact@v4
-        with:
-          name: porter-deb-${{ github.sha }}
-          path: libs/cua-driver/examples/jev-desktop-agent/dist/*.deb
-          if-no-files-found: error
-          retention-days: 14
-
+          /tmp/porter-deb-check/opt/porter/porter --version | grep -q '^Porter 0.1.0$'
           /tmp/porter-deb-check/opt/porter/porter --smoke-test
 
       - name: Upload deb
