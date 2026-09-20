@@ -19,6 +19,7 @@ from openrouter_client import (
     DEFAULT_STT_MODEL,
 )
 from porter_qt import PorterRuntimeThread, PorterViewModel
+from single_instance import PorterSingleInstance
 from porter_settings import (
     AutostartManager,
     PorterSettingsModel,
@@ -170,6 +171,10 @@ def main() -> int:
     app.setApplicationDisplayName("Porter")
     app.setApplicationName("Porter")
 
+    single_instance = PorterSingleInstance()
+    if not args.smoke_test and not single_instance.acquire_or_notify():
+        return 0
+
     icon = QIcon(str(ASSETS_DIR / "porter-ring.svg"))
     app.setWindowIcon(icon)
 
@@ -249,6 +254,9 @@ def main() -> int:
     worker.shortcutActivated.connect(
         lambda: _toggle_window(compact_window)
     )
+    single_instance.activationRequested.connect(
+        lambda: _show_window(main_window)
+    )
 
     tray = None
     if not args.smoke_test and QSystemTrayIcon.isSystemTrayAvailable():
@@ -297,12 +305,13 @@ def main() -> int:
         tray.activated.connect(tray_activated)
         tray.setContextMenu(menu)
         tray.show()
-        app.setQuitOnLastWindowClosed(False)
     else:
-        # Do not leave an inaccessible background process on desktops without a
-        # tray/status notifier implementation.
-        app.setQuitOnLastWindowClosed(True)
         porter.quitRequested.connect(app.quit)
+
+    # Porter is a resident desktop application. If the tray/status notifier is
+    # unavailable, re-launching Porter from the app menu activates this same
+    # process through the single-instance endpoint.
+    app.setQuitOnLastWindowClosed(bool(args.smoke_test))
 
     stopping = False
 
@@ -311,6 +320,7 @@ def main() -> int:
         if stopping:
             return
         stopping = True
+        single_instance.close()
         if worker.isRunning():
             worker.requestShutdown()
             worker.wait(8000)
@@ -335,6 +345,7 @@ def main() -> int:
         secret_store,
         autostart,
         maintenance,
+        single_instance,
     )
     return int(exit_code)
 
