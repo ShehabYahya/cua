@@ -8,6 +8,8 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/capture_ui.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_maintenance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/version.py"
       - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
       - ".github/workflows/capture-porter-ui.yml"
 
@@ -58,8 +60,9 @@ jobs:
           rm -rf screenshots
           uv run --extra gui python python/capture_ui.py screenshots
           test -f screenshots/01-home.png
-          test -f screenshots/09-compact-bar.png
-          test -f screenshots/10-first-run-onboarding.png
+          test -f screenshots/09-about-updates.png
+          test -f screenshots/10-compact-bar.png
+          test -f screenshots/11-first-run-onboarding.png
 
       - name: Upload UI screenshots
         uses: actions/upload-artifact@v4
