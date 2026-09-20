@@ -115,12 +115,22 @@ ApplicationWindow {
                             Layout.preferredHeight: 44
                             radius: 12
                             color: root.currentPage === index
-                                ? Qt.rgba(0.08, 0.45, 0.82, 0.22)
+                                ? Qt.rgba(
+                                    settingsModel.accentColor.r,
+                                    settingsModel.accentColor.g,
+                                    settingsModel.accentColor.b,
+                                    0.22
+                                )
                                 : navHover.hovered
                                     ? Qt.rgba(0.20, 0.38, 0.58, 0.12)
                                     : "transparent"
                             border.width: root.currentPage === index ? 1 : 0
-                            border.color: Qt.rgba(0.28, 0.68, 1.0, 0.35)
+                            border.color: Qt.rgba(
+                                settingsModel.accentColor.r,
+                                settingsModel.accentColor.g,
+                                settingsModel.accentColor.b,
+                                0.35
+                            )
 
                             Text {
                                 anchors.left: parent.left
@@ -254,6 +264,7 @@ ApplicationWindow {
                                             height: 40
                                             state: porter.state
                                             listening: porter.state === "listening"
+                                            accent: settingsModel.accentColor
                                         }
 
                                         ColumnLayout {
@@ -295,10 +306,11 @@ ApplicationWindow {
                                             color: Qt.rgba(0.025, 0.07, 0.13, 0.88)
                                             border.width: commandField.activeFocus ? 1 : 1
                                             border.color: commandField.activeFocus
-                                                ? "#2A9EF2"
+                                                ? settingsModel.accentColor
                                                 : Qt.rgba(0.34, 0.64, 0.92, 0.16)
 
                                             Behavior on border.color {
+                                                enabled: settingsModel.animationsEnabled
                                                 ColorAnimation { duration: 140 }
                                             }
                                         }
@@ -449,6 +461,9 @@ ApplicationWindow {
                     }
 
                     ComputerPage {
+                    }
+
+                    ShortcutsPage {
                     }
 
                     PersonalizationPage {
