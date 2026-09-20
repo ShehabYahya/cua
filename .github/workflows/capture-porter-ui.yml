@@ -2,6 +2,16 @@ name: "CI: Porter UI screenshots"
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/ui/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/capture_ui.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_maintenance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/version.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
+      - ".github/workflows/capture-porter-ui.yml"
   push:
     paths:
       - "libs/cua-driver/examples/jev-desktop-agent/ui/**"

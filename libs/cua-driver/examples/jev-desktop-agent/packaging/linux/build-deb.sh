@@ -51,6 +51,15 @@ install -Dm755 "$BIN" "$STAGE/opt/porter/porter"
 install -Dm644   "$ROOT/packaging/linux/$APP_ID.desktop"   "$STAGE/usr/share/applications/$APP_ID.desktop"
 install -Dm644   "$ROOT/packaging/linux/$APP_ID.metainfo.xml"   "$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
 install -Dm644   "$ROOT/assets/porter-ring.svg"   "$STAGE/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
+install -Dm644 \
+  "$ROOT/../../../../LICENSE.md" \
+  "$STAGE/usr/share/doc/porter-desktop/copyright"
+uv run --extra app --extra deploy pip-licenses \
+  --format=plain-vertical \
+  --with-license-file \
+  --no-license-path \
+  --output-file \
+  "$STAGE/usr/share/doc/porter-desktop/third-party-licenses.txt"
 
 install -d "$STAGE/usr/bin"
 cat >"$STAGE/usr/bin/porter" <<'EOF'
@@ -66,9 +75,10 @@ Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: $ARCH
-Maintainer: Porter contributors
+Maintainer: Shehab Yahya <266881246+ShehabYahya@users.noreply.github.com>
 Depends: libegl1, libgl1, libportaudio2, libxkbcommon-x11-0, xdg-desktop-portal, curl
-Recommends: gnome-keyring
+Recommends: gnome-keyring, xdg-desktop-portal-gnome
+Homepage: https://github.com/ShehabYahya/cua
 Description: Porter resident AI desktop assistant
  Native Aurora Dark desktop assistant using Cua Driver and Jev.
 EOF
@@ -85,6 +95,19 @@ fi
 exit 0
 EOF
 chmod 0755 "$STAGE/DEBIAN/postinst"
+
+cat >"$STAGE/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q /usr/share/icons/hicolor >/dev/null 2>&1 || true
+fi
+exit 0
+EOF
+chmod 0755 "$STAGE/DEBIAN/postrm"
 
 OUT="$DIST/porter_${VERSION}_${ARCH}.deb"
 dpkg-deb --build --root-owner-group "$STAGE" "$OUT"

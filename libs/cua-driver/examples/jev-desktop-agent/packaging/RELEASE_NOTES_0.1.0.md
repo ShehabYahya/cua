@@ -19,7 +19,8 @@ This first preview includes:
 - First-run model/Cua onboarding.
 - Cua Driver health diagnostics, doctor, guided installation, and updater controls.
 - Native Porter update checking against `porter-v*` GitHub releases.
-- Installable Debian package with launcher, icon, AppStream metadata, autostart support, and locked dependencies.
+- Installable Debian package with launcher, icon, AppStream metadata, autostart support, locked dependencies, and bundled-license notices.
+- CI coverage for package installation, reinstallation/upgrade, and removal.
 
 ## Host requirements
 

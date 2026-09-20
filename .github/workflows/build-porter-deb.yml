@@ -53,7 +53,17 @@ jobs:
       - name: Install build and runtime libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y             build-essential             ccache             patchelf             libegl1             libgl1             libportaudio2             libxkbcommon-x11-0             desktop-file-utils
+          sudo apt-get install -y \
+            appstream \
+            build-essential \
+            ccache \
+            desktop-file-utils \
+            libegl1 \
+            libgl1 \
+            libportaudio2 \
+            libxkbcommon-x11-0 \
+            lintian \
+            patchelf
 
       - name: Build Porter deb
         run: bash packaging/linux/build-deb.sh 0.1.0
@@ -68,6 +78,10 @@ jobs:
           dpkg-deb --contents "$DEB" | grep -q './usr/bin/porter'
           dpkg-deb --contents "$DEB" | grep -q             './usr/share/applications/io.github.shehabyahya.Porter.desktop'
           dpkg-deb --contents "$DEB" | grep -q             './usr/share/icons/hicolor/scalable/apps/io.github.shehabyahya.Porter.svg'
+          dpkg-deb --contents "$DEB" | grep -q             './usr/share/metainfo/io.github.shehabyahya.Porter.metainfo.xml'
+          dpkg-deb --contents "$DEB" | grep -q             './usr/share/doc/porter-desktop/copyright'
+          dpkg-deb --contents "$DEB" | grep -q             './usr/share/doc/porter-desktop/third-party-licenses.txt'
+          lintian --fail-on error "$DEB"
 
       - name: Smoke-test packaged executable
         env:
@@ -82,6 +96,30 @@ jobs:
           dpkg-deb -x "$DEB" /tmp/porter-deb-check
           /tmp/porter-deb-check/opt/porter/porter --version | grep -q '^Porter 0.1.0$'
           /tmp/porter-deb-check/opt/porter/porter --smoke-test
+
+      - name: Validate desktop and AppStream metadata
+        run: |
+          desktop-file-validate packaging/linux/io.github.shehabyahya.Porter.desktop
+          appstreamcli validate --no-net \
+            packaging/linux/io.github.shehabyahya.Porter.metainfo.xml
+
+      - name: Test install, upgrade, and uninstall lifecycle
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          OPENROUTER_API_KEY: ""
+          TYPESAFE_API_KEY: ""
+        run: |
+          DEB="$(find dist -maxdepth 1 -name 'porter_0.1.0_*.deb' -print -quit)"
+          sudo apt-get install -y "$PWD/$DEB"
+          test "$(porter --version)" = "Porter 0.1.0"
+          porter --smoke-test
+          sudo apt-get install -y --reinstall "$PWD/$DEB"
+          test "$(porter --version)" = "Porter 0.1.0"
+          sudo apt-get remove -y porter-desktop
+          test ! -e /opt/porter/porter
+          test ! -e /usr/bin/porter
+          test ! -e /usr/share/applications/io.github.shehabyahya.Porter.desktop
 
       - name: Upload deb
         uses: actions/upload-artifact@v4

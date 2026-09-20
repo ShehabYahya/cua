@@ -376,7 +376,8 @@ bash packaging/linux/build-deb.sh 0.1.0
 
 The build uses the committed `uv.lock` with `uv sync --locked`, then uses
 Nuitka's PySide6 plugin to bundle the native Python/Qt app and its QML/assets.
-It stages the desktop file, Porter ring icon, and AppStream metadata into:
+It stages the desktop file, Porter ring icon, AppStream metadata, Porter's MIT
+license, and generated notices for bundled third-party dependencies into:
 
 ```text
 dist/porter_0.1.0_<arch>.deb
@@ -394,6 +395,10 @@ If it is missing, first-run setup and About & Updates can open the official Cua
 installation guide or, after an explicit confirmation, run Cua's official Linux
 installer. Existing installations can run `cua-driver doctor` or
 `cua-driver update --apply` directly from the Porter UI.
+
+Package CI validates the desktop and AppStream metadata, runs Lintian, and
+exercises installation, same-version upgrade/reinstallation, and removal on a
+clean Ubuntu runner before the package is accepted.
 
 ### Porter v0.1.0 release path
 

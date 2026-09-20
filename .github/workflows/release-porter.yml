@@ -46,13 +46,24 @@ jobs:
       - name: Resolve release version
         id: version
         shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME#porter-v}"
             TAG="$GITHUB_REF_NAME"
           else
+            if [[ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+              echo "Manual releases must run from $DEFAULT_BRANCH, not $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
             VERSION="${{ inputs.version }}"
             TAG="porter-v$VERSION"
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid Porter release version: $VERSION" >&2
+            exit 1
           fi
 
           APP_VERSION="$(
@@ -75,7 +86,17 @@ jobs:
       - name: Install build and runtime libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y             build-essential             ccache             patchelf             libegl1             libgl1             libportaudio2             libxkbcommon-x11-0             desktop-file-utils
+          sudo apt-get install -y \
+            appstream \
+            build-essential \
+            ccache \
+            desktop-file-utils \
+            libegl1 \
+            libgl1 \
+            libportaudio2 \
+            libxkbcommon-x11-0 \
+            lintian \
+            patchelf
 
       - name: Build Debian package
         run: |
@@ -85,6 +106,16 @@ jobs:
         run: |
           cd dist
           sha256sum porter_*.deb > porter_SHA256SUMS.txt
+
+      - name: Validate release package metadata
+        run: |
+          DEB="$(find dist -maxdepth 1 -name 'porter_*.deb' -print -quit)"
+          test -n "$DEB"
+          lintian --fail-on error "$DEB"
+          desktop-file-validate \
+            packaging/linux/io.github.shehabyahya.Porter.desktop
+          appstreamcli validate --no-net \
+            packaging/linux/io.github.shehabyahya.Porter.metainfo.xml
 
       - name: Verify packaged executable
         env:

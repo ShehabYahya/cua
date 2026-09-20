@@ -5,6 +5,7 @@ Name=Porter
 GenericName=Desktop Assistant
 Comment=Resident AI desktop control
 Exec=/opt/porter/porter
+TryExec=/opt/porter/porter
 Icon=io.github.shehabyahya.Porter
 Terminal=false
 Categories=Utility;System;
