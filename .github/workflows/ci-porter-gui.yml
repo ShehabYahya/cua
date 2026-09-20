@@ -9,6 +9,8 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/global_shortcuts.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
       - "libs/cua-driver/examples/jev-desktop-agent/python/voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
@@ -26,6 +28,8 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/global_shortcuts.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
       - "libs/cua-driver/examples/jev-desktop-agent/python/voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
@@ -65,7 +69,7 @@ jobs:
       - name: Install Qt runtime libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0
+          sudo apt-get install -y             libegl1             libgl1             libxkbcommon-x11-0             desktop-file-utils
       - name: Install native GUI dependencies
         run: uv sync --extra gui
       - name: Compile Porter Python sources
@@ -76,6 +80,17 @@ jobs:
           uv run --extra gui python -m unittest python/tests/test_porter_settings.py -v
           uv run --extra gui python -m unittest python/tests/test_visual_click_mode.py -v
           uv run --extra gui python -m unittest python/tests/test_runtime.py -v
+      - name: Validate Linux desktop packaging metadata
+        run: |
+          bash -n packaging/linux/build-deb.sh
+          desktop-file-validate             packaging/linux/io.github.shehabyahya.Porter.desktop
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          ET.parse(
+              "packaging/linux/"
+              "io.github.shehabyahya.Porter.metainfo.xml"
+          )
+          PY
       - name: Load Aurora Dark QML offscreen
         env:
           QT_QPA_PLATFORM: offscreen
