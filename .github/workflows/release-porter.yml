@@ -117,7 +117,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
-          PRERELEASE: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
+          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
         shell: bash
         run: |
           NOTES="libs/cua-driver/examples/jev-desktop-agent/packaging/RELEASE_NOTES_${VERSION}.md"
