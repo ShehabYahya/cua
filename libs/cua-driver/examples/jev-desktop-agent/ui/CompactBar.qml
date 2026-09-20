@@ -16,7 +16,9 @@ Window {
     flags: Qt.Window | Qt.FramelessWindowHint
 
     property bool hovered: hover.hovered
-    property bool engaged: porter.busy || porter.listening || commandField.activeFocus
+    property bool engaged: porter.busy
+        || porter.state === "listening"
+        || commandField.activeFocus
     property real panelOpacity: engaged ? 0.92 : hovered ? 0.72 : 0.26
 
     onClosing: function(close) {
@@ -64,7 +66,7 @@ Window {
                 Layout.preferredWidth: 38
                 Layout.preferredHeight: 38
                 state: porter.state
-                listening: porter.listening
+                listening: porter.state === "listening"
             }
 
             TextField {
@@ -72,11 +74,13 @@ Window {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 enabled: !porter.busy
-                placeholderText: porter.listening
+                placeholderText: porter.state === "listening"
                     ? "Listening…"
                     : porter.busy
                         ? porter.statusText
-                        : "Type or speak to Porter…"
+                        : porter.listening
+                            ? "Type or speak to Porter…"
+                            : "Type a command — microphone muted"
                 color: "#EDF6FF"
                 placeholderTextColor: root.engaged || root.hovered ? "#8299B7" : "#5C718D"
                 font.pixelSize: 15
