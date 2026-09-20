@@ -13,11 +13,12 @@ Item {
         id: installDriverDialog
         modal: true
         anchors.centerIn: parent
+        width: 520
         title: "Install Cua Driver?"
         standardButtons: Dialog.Ok | Dialog.Cancel
 
         contentItem: Text {
-            width: 470
+            width: installDriverDialog.availableWidth
             text: "Porter will run Cua's official Linux installer from cua.ai. This changes software on your computer. Continue?"
             color: "#C8D7EC"
             font.pixelSize: 13

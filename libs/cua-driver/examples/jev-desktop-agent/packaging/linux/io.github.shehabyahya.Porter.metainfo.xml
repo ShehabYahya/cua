@@ -5,6 +5,10 @@
   <summary>Resident AI desktop control</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
+  <developer id="io.github.shehabyahya">
+    <name>Shehab Yahya</name>
+  </developer>
+  <url type="homepage">https://github.com/ShehabYahya/cua</url>
   <description>
     <p>
       Porter is a native resident desktop assistant built on Cua Driver and
@@ -18,8 +22,8 @@
   </provides>
   <categories>
     <category>Utility</category>
-    <category>System</category>
   </categories>
+  <content_rating type="oars-1.1" />
   <releases>
     <release version="0.1.0" date="2026-09-20">
       <description>
