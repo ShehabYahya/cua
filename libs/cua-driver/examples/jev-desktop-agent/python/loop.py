@@ -100,6 +100,7 @@ class AgentLoop:
         download_root: str | None = None,
         progress: Callable[[str], None] | None = None,
         enforce_policy: bool = False,
+        visual_click_mode: str = "strict",
     ) -> None:
         self._driver = driver
         self._chooser = chooser
@@ -111,6 +112,11 @@ class AgentLoop:
         self._download_tracker = DownloadTracker(download_root)
         self._progress_callback = progress
         self._enforce_policy = enforce_policy
+        if visual_click_mode not in {"strict", "permissive"}:
+            raise ValueError(
+                "visual_click_mode must be 'strict' or 'permissive'"
+            )
+        self._visual_click_mode = visual_click_mode
         self._recent_files: tuple[str, ...] = ()
         self._recent_context: list[str] = []
         self._last_target: tuple[int, int] | None = None
@@ -400,8 +406,15 @@ class AgentLoop:
             prepared_texts=slots,
             max_candidates=self._pool_limit(observation, slots),
             allow_visual_clicks=bool(
-                getattr(self._driver, "coordinate_click_supported", False)
-                or self._driver.capture_bound_click
+                self._driver.capture_bound_click
+                or (
+                    self._visual_click_mode == "permissive"
+                    and getattr(
+                        self._driver,
+                        "coordinate_click_supported",
+                        False,
+                    )
+                )
             ),
             download_root=self._download_root,
             recent_files=self._download_tracker.validate_recent(self._recent_files),
