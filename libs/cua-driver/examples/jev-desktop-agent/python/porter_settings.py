@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -218,9 +217,18 @@ class AutostartManager:
 
     @staticmethod
     def _exec_line(command: tuple[str, ...]) -> str:
-        # Desktop Entry Exec syntax accepts quoting, but is not a shell. The
-        # conservative shlex form is valid for the paths Porter emits here.
-        return " ".join(shlex.quote(part) for part in command)
+        # Desktop Entry Exec parsing is not shell parsing. Quote every argument
+        # using the double-quote/backslash rules from the desktop-entry spec.
+        def quote(value: str) -> str:
+            escaped = (
+                value.replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("$", "\\$")
+                .replace("`", "\\`")
+            )
+            return '"' + escaped + '"'
+
+        return " ".join(quote(part) for part in command)
 
     def enabled(self) -> bool:
         return self.path.is_file()
