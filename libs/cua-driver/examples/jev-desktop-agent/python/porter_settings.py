@@ -38,6 +38,7 @@ class PorterAppSettings:
     compact_idle_opacity: float = 0.26
     compact_hover_opacity: float = 0.72
     animations_enabled: bool = True
+    onboarding_complete: bool = False
     max_steps: int = 30
     max_candidates: int = 32
 
@@ -164,6 +165,10 @@ class PorterSettingsStore:
                 s.value("appearance/animations_enabled", True),
                 True,
             ),
+            onboarding_complete=self._bool(
+                s.value("general/onboarding_complete", False),
+                False,
+            ),
             max_steps=int(s.value("advanced/max_steps", 30)),
             max_candidates=int(s.value("advanced/max_candidates", 32)),
         )
@@ -209,6 +214,10 @@ class PorterSettingsStore:
         s.setValue(
             "appearance/animations_enabled",
             value.animations_enabled,
+        )
+        s.setValue(
+            "general/onboarding_complete",
+            value.onboarding_complete,
         )
         s.setValue("advanced/max_steps", value.max_steps)
         s.setValue("advanced/max_candidates", value.max_candidates)
@@ -449,6 +458,21 @@ class PorterSettingsModel(QObject):
     def animationsEnabled(self) -> bool:
         return self._draft.animations_enabled
 
+    @Property(bool, notify=settingsChanged)
+    def onboardingComplete(self) -> bool:
+        return self._saved.onboarding_complete
+
+    @Property(bool, notify=settingsChanged)
+    def needsOnboarding(self) -> bool:
+        has_credential = (
+            self.openRouterConfigured
+            or self.typeSafeConfigured
+        )
+        return (
+            not self._saved.onboarding_complete
+            or not has_credential
+        )
+
     @Property(bool, notify=credentialsChanged)
     def openRouterConfigured(self) -> bool:
         return self._secrets.is_set(SecretStore.OPENROUTER)
@@ -566,6 +590,10 @@ class PorterSettingsModel(QObject):
     def setAnimationsEnabled(self, value: bool) -> None:
         self._change(animations_enabled=bool(value))
 
+    @Slot(bool)
+    def setOnboardingComplete(self, value: bool) -> None:
+        self._change(onboarding_complete=bool(value))
+
     def _save_secret(self, name: str, value: str) -> None:
         cleaned = value.strip()
         if not cleaned:
@@ -582,6 +610,7 @@ class PorterSettingsModel(QObject):
             self._dirty = True
             self.dirtyChanged.emit()
         self.credentialsChanged.emit()
+        self.settingsChanged.emit()
         self._set_apply_status(
             "Credential stored securely. Apply to restart the backend with it."
         )
@@ -603,6 +632,7 @@ class PorterSettingsModel(QObject):
             self._dirty = True
             self.dirtyChanged.emit()
         self.credentialsChanged.emit()
+        self.settingsChanged.emit()
         self._set_apply_status(
             "OpenRouter credential cleared. Apply to restart the backend."
         )
@@ -616,6 +646,7 @@ class PorterSettingsModel(QObject):
             self._dirty = True
             self.dirtyChanged.emit()
         self.credentialsChanged.emit()
+        self.settingsChanged.emit()
         self._set_apply_status(
             "TypeSafe credential cleared. Apply to restart the backend."
         )
@@ -644,6 +675,7 @@ class PorterSettingsModel(QObject):
             return False
         self._saved = self._draft
         self._credentials_changed = False
+        self.settingsChanged.emit()
         if self._dirty:
             self._dirty = False
             self.dirtyChanged.emit()
