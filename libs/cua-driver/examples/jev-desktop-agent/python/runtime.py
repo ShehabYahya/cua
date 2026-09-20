@@ -29,6 +29,7 @@ class PorterRuntimeConfig:
     """Backend settings that are independent of any specific frontend."""
 
     provider: str = "auto"
+    jev_model: str | None = None
     vision_enabled: bool = True
     vision_model: str = DEFAULT_REASONING_MODEL
     writer_model: str = DEFAULT_REASONING_MODEL
@@ -36,6 +37,8 @@ class PorterRuntimeConfig:
     max_candidates: int = 32
     download_root: str | None = None
     enforce_policy: bool = False
+    allow_foreground: bool = True
+    visual_click_mode: str = "strict"
 
     def resolved_download_root(self) -> str | None:
         if self.download_root:
@@ -162,7 +165,10 @@ class PorterRuntime:
         stack = contextlib.AsyncExitStack()
         await stack.__aenter__()
         try:
-            chooser = self._chooser_factory(self.config.provider)
+            chooser = self._chooser_factory(
+                self.config.provider,
+                model=self.config.jev_model,
+            )
             close_chooser = getattr(chooser, "close", None)
             if callable(close_chooser):
                 stack.callback(close_chooser)
@@ -202,6 +208,7 @@ class PorterRuntime:
                 download_root=self.config.resolved_download_root(),
                 progress=self._progress,
                 enforce_policy=self.config.enforce_policy,
+                visual_click_mode=self.config.visual_click_mode,
             )
         except BaseException:
             await stack.aclose()
@@ -262,7 +269,7 @@ class PorterRuntime:
         app: str | None = None,
         act: bool = True,
         approve_consequential: bool = False,
-        allow_foreground: bool = False,
+        allow_foreground: bool | None = None,
         confirm: ConfirmationCallback | None = None,
     ) -> RunResult:
         if not self._started or self._agent is None:
@@ -289,7 +296,11 @@ class PorterRuntime:
                     app=app,
                     act=act,
                     approve_consequential=approve_consequential,
-                    allow_foreground=allow_foreground,
+                    allow_foreground=(
+                        self.config.allow_foreground
+                        if allow_foreground is None
+                        else bool(allow_foreground)
+                    ),
                     confirm=confirm,
                     cancel_event=cancel_event,
                 )
