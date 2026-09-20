@@ -69,8 +69,10 @@ class PorterRuntimeThread(QThread):
                 if self._voice_config.enabled:
                     await runtime.start_hands_free(self._voice_config)
             except Exception as error:
+                # Keep the Qt/backend worker alive so the native settings UI can
+                # accept credentials or corrected provider settings and then
+                # reconfigure the runtime without restarting Porter.
                 self.runtimeFailed.emit(str(error))
-                loop.call_soon(loop.stop)
                 return
             self.runtimeReady.emit()
 
