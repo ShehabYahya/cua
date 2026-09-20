@@ -14,6 +14,24 @@ command -v dpkg-deb >/dev/null || {
   echo "dpkg-deb is required" >&2
   exit 1
 }
+command -v python3 >/dev/null || {
+  echo "python3 is required" >&2
+  exit 1
+}
+
+APP_VERSION="$(
+  ROOT="$ROOT" python3 - <<'PY'
+import os
+import sys
+sys.path.insert(0, os.path.join(os.environ["ROOT"], "python"))
+from version import __version__
+print(__version__)
+PY
+)"
+if [[ "$VERSION" != "$APP_VERSION" ]]; then
+  echo "Requested package version $VERSION does not match Porter $APP_VERSION" >&2
+  exit 1
+fi
 
 cd "$ROOT"
 rm -rf "$BUILD"
@@ -49,7 +67,7 @@ Section: utils
 Priority: optional
 Architecture: $ARCH
 Maintainer: Porter contributors
-Depends: libegl1, libgl1, libportaudio2, libxkbcommon-x11-0, xdg-desktop-portal
+Depends: libegl1, libgl1, libportaudio2, libxkbcommon-x11-0, xdg-desktop-portal, curl
 Recommends: gnome-keyring
 Description: Porter resident AI desktop assistant
  Native Aurora Dark desktop assistant using Cua Driver and Jev.
