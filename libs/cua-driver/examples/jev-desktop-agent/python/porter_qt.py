@@ -259,6 +259,7 @@ class PorterViewModel(QObject):
     busyChanged = Signal()
     listeningChanged = Signal()
     micLevelChanged = Signal()
+    voiceSilenceSecondsChanged = Signal()
     transcriptChanged = Signal()
     lastCommandChanged = Signal()
 
@@ -317,7 +318,7 @@ class PorterViewModel(QObject):
     def transcript(self) -> str:
         return self._transcript
 
-    @Property(float, constant=True)
+    @Property(float, notify=voiceSilenceSecondsChanged)
     def voiceSilenceSeconds(self) -> float:
         return self._voice_silence_seconds
 
@@ -435,6 +436,15 @@ class PorterViewModel(QObject):
         elif kind == "voice_listening_started":
             self._set_listening(True)
             self._set_mic_level(0.0)
+            silence = event.data.get("silence_seconds")
+            if silence is not None:
+                try:
+                    value = float(silence)
+                except (TypeError, ValueError):
+                    value = self._voice_silence_seconds
+                if abs(value - self._voice_silence_seconds) >= 0.001:
+                    self._voice_silence_seconds = value
+                    self.voiceSilenceSecondsChanged.emit()
             if not self._busy:
                 self._set_status("Listening")
                 self._set_detail("Speak naturally — Porter will submit when you stop")
