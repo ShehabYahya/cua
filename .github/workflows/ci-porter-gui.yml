@@ -7,6 +7,9 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_app.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/runtime.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/events.py"
       - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
@@ -17,6 +20,9 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_app.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/runtime.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/events.py"
       - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
@@ -56,6 +62,8 @@ jobs:
         run: uv sync --extra gui
       - name: Compile Porter Python sources
         run: uv run --extra gui python -m compileall -q python
+      - name: Run Porter voice service tests
+        run: uv run --extra gui python -m unittest python/tests/test_porter_voice.py -v
       - name: Load Aurora Dark QML offscreen
         env:
           QT_QPA_PLATFORM: offscreen
