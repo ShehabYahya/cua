@@ -306,6 +306,18 @@ class PorterRuntimeThread(QThread):
         future.add_done_callback(finished)
 
     @Slot()
+    def restartBackend(self) -> None:
+        future = self.reconfigure(
+            self._config,
+            self._voice_config,
+            self._shortcut_config,
+        )
+        if future is None:
+            self.reconfigureFailed.emit(
+                "Porter worker is not running."
+            )
+
+    @Slot()
     def cancel(self) -> None:
         runtime = self._runtime
         loop = self._loop
@@ -387,6 +399,8 @@ class PorterViewModel(QObject):
         worker.runtimeFailed.connect(self._on_runtime_failed)
         worker.commandFinished.connect(self._on_command_finished)
         worker.commandFailed.connect(self._on_command_failed)
+        worker.reconfigured.connect(self._on_runtime_reconfigured)
+        worker.reconfigureFailed.connect(self._on_runtime_reconfigure_failed)
         worker.shortcutStatusChanged.connect(self._on_shortcut_status)
         worker.diagnosticsReady.connect(self._on_diagnostics_ready)
         worker.diagnosticsFailed.connect(self._on_diagnostics_failed)
@@ -532,6 +546,18 @@ class PorterViewModel(QObject):
         self._worker.requestDiagnostics()
 
     @Slot()
+    def restartBackend(self) -> None:
+        if self._busy:
+            self._set_status("Finish the current task first")
+            return
+        self._set_state("starting")
+        self._set_status("Restarting Porter backend…")
+        self._set_detail(
+            "Reconnecting Cua Driver, Jev, and voice services"
+        )
+        self._worker.restartBackend()
+
+    @Slot()
     def toggleCompact(self) -> None:
         self.toggleCompactRequested.emit()
 
@@ -673,6 +699,20 @@ class PorterViewModel(QObject):
         self._set_busy(False)
         self._set_state("error")
         self._set_status("Command failed")
+        self._set_detail(message)
+
+    @Slot()
+    def _on_runtime_reconfigured(self) -> None:
+        self._set_busy(False)
+        self._set_state("ready")
+        self._set_status("Ready")
+        self._set_detail("Porter backend restarted")
+
+    @Slot(str)
+    def _on_runtime_reconfigure_failed(self, message: str) -> None:
+        self._set_busy(False)
+        self._set_state("error")
+        self._set_status("Backend restart failed")
         self._set_detail(message)
 
     @Slot(str)
