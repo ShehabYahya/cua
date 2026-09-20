@@ -206,6 +206,20 @@ class PorterRuntime:
             return
         self._emit("runtime_stopping", "Stopping Porter runtime…")
         self.cancel()
+
+        if self._command_lock.locked():
+            async def wait_until_idle() -> None:
+                while self._command_lock.locked():
+                    await asyncio.sleep(0.05)
+
+            try:
+                await asyncio.wait_for(wait_until_idle(), timeout=5.0)
+            except asyncio.TimeoutError:
+                # An atomic provider/Driver call may not be cancellable mid-call.
+                # After a bounded grace period, continue shutdown rather than
+                # keeping the desktop application alive indefinitely.
+                pass
+
         stack = self._stack
         self._stack = None
         self._driver = None
