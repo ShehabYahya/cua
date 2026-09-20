@@ -37,7 +37,7 @@ cd "$ROOT"
 rm -rf "$BUILD"
 mkdir -p "$BINARY_DIR" "$STAGE" "$DIST"
 
-uv sync --extra app --extra deploy
+uv sync --locked --extra app --extra deploy
 
 uv run --extra app --extra deploy python -m nuitka   --mode=onefile   --enable-plugin=pyside6   --assume-yes-for-downloads   --output-dir="$BINARY_DIR"   --output-filename=porter   --include-data-dir="$ROOT/ui=ui"   --include-data-dir="$ROOT/assets=assets"   --include-package=keyring.backends   --include-package=secretstorage   --include-package=dbus_next   --include-package=sounddevice   "$ROOT/python/porter_app.py"
 
