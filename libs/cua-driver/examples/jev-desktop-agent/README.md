@@ -330,12 +330,53 @@ The native shell currently provides:
 - persistent download-root and voice/model defaults;
 - XDG desktop-session autostart ("Start Porter when I sign in");
 - live runtime reconfiguration: Apply restarts the backend stack inside the
-  resident Porter process without closing the native application.
+  resident Porter process without closing the native application;
+- a Wayland-safe global quick-bar shortcut through the XDG GlobalShortcuts
+  portal, with `Ctrl+Alt+Space` as the preferred default trigger;
+- a reverse-DNS desktop identity (`io.github.shehabyahya.Porter`) so modern
+  portal implementations can identify the host application;
+- real Shortcuts, Personalization, and Appearance pages;
+- Aurora Dark accent, compact-bar idle/hover opacity, and animation preferences;
+- a personalized native greeting that is kept out of Jev's control prompt;
+- Linux desktop launcher/AppStream metadata and a reproducible Nuitka + dpkg
+  build script for an installable `.deb`.
 
 Hands-free listening requires `OPENROUTER_API_KEY` for transcription. Silence is
 processed locally; only detected utterances are sent to STT. Start muted with
 `--no-hands-free`, or toggle listening from the Porter tray menu or Voice &
 Audio page.
+
+The global shortcut uses the desktop portal rather than X11 key grabs. On
+supported desktops the first registration may open the system shortcut
+configuration dialog. If the portal is unavailable, Porter continues running
+and reports the shortcut status in the Shortcuts page.
+
+### Build an installable Debian package
+
+On an Ubuntu/Debian build machine:
+
+```bash
+cd ~/cua/libs/cua-driver/examples/jev-desktop-agent
+bash packaging/linux/build-deb.sh 0.1.0
+```
+
+The build uses Nuitka's PySide6 plugin, bundles the native Python/Qt app and its
+QML/assets, then stages the desktop file, Porter ring icon, and AppStream
+metadata into:
+
+```text
+dist/porter_0.1.0_<arch>.deb
+```
+
+Install the resulting package with:
+
+```bash
+sudo apt install ./dist/porter_0.1.0_amd64.deb
+```
+
+The installed launcher is `/usr/bin/porter`, backed by
+`/opt/porter/porter`. Cua Driver remains a host prerequisite and is not
+silently replaced or vendored by the Porter package.
 
 For a headless QML load check:
 
