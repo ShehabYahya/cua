@@ -31,12 +31,14 @@ Item {
 
             AuroraButton {
                 text: "Revert"
+                visible: settingsModel.dirty
                 enabled: settingsModel.dirty
                 onClicked: settingsModel.revert()
             }
 
             AuroraButton {
                 text: "Apply"
+                visible: settingsModel.dirty
                 primary: true
                 enabled: settingsModel.dirty
                 onClicked: settingsModel.apply()
