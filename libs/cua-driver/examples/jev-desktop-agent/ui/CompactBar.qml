@@ -6,10 +6,10 @@ import "components"
 Window {
     id: root
     objectName: "compactWindow"
-    width: 680
-    height: 82
-    minimumWidth: 520
-    maximumHeight: 82
+    width: 700
+    height: 104
+    minimumWidth: 540
+    maximumHeight: 104
     visible: false
     color: "transparent"
     title: "Porter Quick Bar"
@@ -18,13 +18,50 @@ Window {
     property bool hovered: hover.hovered
     property bool engaged: porter.busy
         || porter.state === "listening"
+        || porter.state === "error"
+        || porter.state === "attention"
         || commandField.activeFocus
     property color accent: settingsModel.accentColor
     property real panelOpacity: engaged
-        ? 0.92
+        ? 0.94
         : hovered
             ? settingsModel.compactHoverOpacity
             : settingsModel.compactIdleOpacity
+
+    readonly property string requestStatus: {
+        const detail = porter.detailText || ""
+        if (porter.state === "error")
+            return detail.length
+                ? "Failed — " + detail
+                : "Failed — Porter could not complete the request"
+        if (porter.state === "attention")
+            return detail.length
+                ? porter.statusText + " — " + detail
+                : porter.statusText
+        if (porter.busy)
+            return detail.length
+                ? porter.statusText + " — " + detail
+                : porter.statusText
+        if (porter.state === "listening")
+            return "Listening…"
+        if (porter.statusText === "Done")
+            return detail.length ? "Done — " + detail : "Done"
+        return porter.listening
+            ? "Ready · hands-free listening on"
+            : "Ready · microphone muted"
+    }
+
+    readonly property color requestStatusColor: {
+        if (porter.state === "error")
+            return "#FF7188"
+        if (porter.state === "attention")
+            return "#FFBE67"
+        if (porter.busy || porter.state === "listening")
+            return root.accent
+        if (porter.statusText === "Done")
+            return "#70D7B0"
+        return "#7890AE"
+    }
 
     onClosing: function(close) {
         close.accepted = false
@@ -68,11 +105,38 @@ Window {
 
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 16
+            anchors.leftMargin: 10
             anchors.rightMargin: 10
-            anchors.topMargin: 10
-            anchors.bottomMargin: 10
-            spacing: 12
+            anchors.topMargin: 9
+            anchors.bottomMargin: 9
+            spacing: 10
+
+            Item {
+                id: moveHandle
+                Layout.preferredWidth: 22
+                Layout.fillHeight: true
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "⠿"
+                    color: dragHover.hovered ? "#B5C8DF" : "#657C99"
+                    font.pixelSize: 18
+                }
+
+                HoverHandler {
+                    id: dragHover
+                    cursorShape: Qt.SizeAllCursor
+                }
+
+                DragHandler {
+                    target: null
+                    acceptedButtons: Qt.LeftButton
+                    onActiveChanged: {
+                        if (active)
+                            root.startSystemMove()
+                    }
+                }
+            }
 
             PorterRing {
                 Layout.preferredWidth: 38
@@ -82,30 +146,58 @@ Window {
                 accent: settingsModel.accentColor
             }
 
-            TextField {
-                id: commandField
+            ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                enabled: !porter.busy
-                placeholderText: porter.state === "listening"
-                    ? "Listening…"
-                    : porter.busy
-                        ? porter.statusText
+                spacing: 3
+
+                TextField {
+                    id: commandField
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 42
+                    enabled: !porter.busy
+                    placeholderText: porter.state === "listening"
+                        ? "Listening…"
                         : porter.listening
                             ? "Type or speak to Porter…"
                             : "Type a command — microphone muted"
-                color: "#EDF6FF"
-                placeholderTextColor: root.engaged || root.hovered ? "#8299B7" : "#5C718D"
-                font.pixelSize: 15
-                selectByMouse: true
-                background: Item {}
+                    color: "#000000"
+                    placeholderTextColor: "#67778A"
+                    font.pixelSize: 15
+                    leftPadding: 12
+                    rightPadding: 12
+                    selectByMouse: true
 
-                onAccepted: {
-                    const value = text.trim()
-                    if (value.length > 0) {
-                        porter.submitCommand(value)
-                        text = ""
+                    background: Rectangle {
+                        radius: 11
+                        color: commandField.enabled
+                            ? Qt.rgba(0.95, 0.97, 1.0, 0.96)
+                            : Qt.rgba(0.86, 0.90, 0.95, 0.82)
+                        border.width: commandField.activeFocus ? 1 : 0
+                        border.color: root.accent
                     }
+
+                    onAccepted: {
+                        const value = text.trim()
+                        if (value.length > 0) {
+                            porter.submitCommand(value)
+                            text = ""
+                        }
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: root.requestStatus
+                    color: root.requestStatusColor
+                    font.pixelSize: 11
+                    font.weight: (
+                        porter.state === "error"
+                        || porter.state === "attention"
+                        || porter.busy
+                    ) ? Font.DemiBold : Font.Normal
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
                 }
             }
 
@@ -177,7 +269,12 @@ Window {
                     radius: 12
                     color: porter.busy
                         ? Qt.rgba(0.45, 0.10, 0.16, submitButton.hovered ? 0.48 : 0.30)
-                        : Qt.rgba(0.08, 0.48, 0.80, submitButton.hovered ? 0.72 : 0.52)
+                        : Qt.rgba(
+                            root.accent.r,
+                            root.accent.g,
+                            root.accent.b,
+                            submitButton.hovered ? 0.82 : 0.64
+                        )
                 }
 
                 onClicked: {
