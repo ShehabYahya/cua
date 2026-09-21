@@ -547,7 +547,10 @@ class AgentLoop:
                 delivered += 1
                 continue
             except DriverRefusal as refusal:
-                if refusal.code == "session_ended" and delivered == 0:
+                if (
+                    refusal.code in {"session_ended", "tool_invocation_failed"}
+                    and delivered == 0
+                ):
                     return "session_revived", refusal.reason, 0
                 if refusal.recommended == "foreground" and allow_foreground:
                     if cancel_event is not None and cancel_event.is_set():
@@ -560,7 +563,8 @@ class AgentLoop:
                         continue
                     except DriverRefusal as foreground_refusal:
                         if (
-                            foreground_refusal.code == "session_ended"
+                            foreground_refusal.code
+                            in {"session_ended", "tool_invocation_failed"}
                             and delivered == 0
                         ):
                             return "session_revived", foreground_refusal.reason, 0
