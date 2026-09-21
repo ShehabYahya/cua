@@ -206,7 +206,7 @@ def main() -> int:
     def compact_idle() -> None:
         compact_window.show()
         compact_window.setWidth(680)
-        compact_window.setHeight(82)
+        compact_window.setHeight(104)
         porter._set_state("ready")
         porter._set_status("Ready")
         porter._set_detail("Porter is connected to your desktop")
