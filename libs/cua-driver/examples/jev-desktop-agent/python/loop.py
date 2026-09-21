@@ -847,7 +847,7 @@ class AgentLoop:
                     if revivals >= 1:
                         return stop(
                             "refused",
-                            "The Driver lifecycle session ended twice in this run.",
+                            "The Cua Driver session failed twice in this run; Porter stopped retrying.",
                             history,
                         )
                     revivals += 1
