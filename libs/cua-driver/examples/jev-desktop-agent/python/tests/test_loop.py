@@ -315,6 +315,37 @@ class LoopTest(unittest.TestCase):
             ["session_revived", "executed"],
         )
 
+    def test_tool_invocation_failure_revives_session_once(self):
+        class InvocationDriver(FakeDriver):
+            def __init__(self):
+                super().__init__()
+                self.failed_once = False
+
+            async def execute(self, candidate):
+                if not self.failed_once:
+                    self.failed_once = True
+                    raise DriverRefusal(
+                        candidate.tool or "click",
+                        "tool invocation failed",
+                        code="tool_invocation_failed",
+                    )
+                return await super().execute(candidate)
+
+        driver = InvocationDriver()
+        agent = AgentLoop(
+            driver,
+            FakeChooser(),
+            max_steps=5,
+        )
+        result = asyncio.run(agent.run("open new tab", act=True))
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(driver.revived, 1)
+        self.assertEqual(driver.executed, ["click-1"])
+        self.assertEqual(
+            [step.outcome for step in result.steps[:2]],
+            ["session_revived", "executed"],
+        )
+
     def test_reobserve_hesitation_is_bounded_on_unchanged_state(self):
         class StableDriver(FakeDriver):
             async def execute(self, candidate):
