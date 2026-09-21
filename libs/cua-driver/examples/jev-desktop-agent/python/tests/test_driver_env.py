@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from contracts import DriverRefusal
 from driver import CuaMcpDriver, driver_child_environment
 
 
@@ -50,6 +53,63 @@ class DriverEnvironmentTest(unittest.TestCase):
         self.assertEqual(env["CUA_DRIVER_RS_A11Y_ADVERTISE_MODE"], "none")
         self.assertEqual(env["CUA_DRIVER_RS_ENABLE_WAYLAND"], "0")
 
+
+    def test_session_start_prefers_call_start_session(self) -> None:
+        driver = CuaMcpDriver()
+        driver._tool_schemas = {
+            "call_start_session": {"properties": {}},
+            "start_session": {"properties": {}},
+        }
+        calls = []
+
+        async def fake_call(name, arguments):
+            calls.append((name, arguments))
+            return {}
+
+        driver._call = fake_call
+        asyncio.run(driver._start_driver_session(require=True))
+        self.assertEqual(calls, [("call_start_session", {})])
+
+    def test_session_start_falls_back_to_legacy_start_session(self) -> None:
+        driver = CuaMcpDriver()
+        driver._tool_schemas = {
+            "start_session": {"properties": {}},
+        }
+        calls = []
+
+        async def fake_call(name, arguments):
+            calls.append((name, arguments))
+            return {}
+
+        driver._call = fake_call
+        asyncio.run(driver._start_driver_session(require=True))
+        self.assertEqual(calls, [("start_session", {})])
+
+    def test_tool_invocation_failed_becomes_recoverable_driver_refusal(self) -> None:
+        class FakeSession:
+            async def call_tool(self, name, arguments):
+                return SimpleNamespace(
+                    structuredContent=None,
+                    isError=True,
+                    content=[
+                        SimpleNamespace(
+                            type="text",
+                            text="tool_invocation_failed",
+                        )
+                    ],
+                )
+
+        driver = CuaMcpDriver()
+        driver._session = FakeSession()
+        driver._tool_schemas = {"click": {"properties": {}}}
+
+        with self.assertRaises(DriverRefusal) as raised:
+            asyncio.run(driver._call("click", {}))
+
+        self.assertEqual(
+            raised.exception.code,
+            "tool_invocation_failed",
+        )
 
     def test_inline_mcp_image_is_materialized_for_vision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
