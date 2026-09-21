@@ -472,14 +472,10 @@ class PorterSettingsModel(QObject):
 
     @Property(bool, notify=settingsChanged)
     def needsOnboarding(self) -> bool:
-        has_credential = (
-            self.openRouterConfigured
-            or self.typeSafeConfigured
-        )
-        return (
-            not self._saved.onboarding_complete
-            or not has_credential
-        )
+        # First-run completion is a UI preference, not a live credential probe.
+        # Once the user finishes setup, keep it finished across launches even if
+        # a provider is temporarily unavailable or the keyring is locked.
+        return not self._saved.onboarding_complete
 
     @Property(bool, notify=credentialsChanged)
     def openRouterConfigured(self) -> bool:
@@ -600,7 +596,36 @@ class PorterSettingsModel(QObject):
 
     @Slot(bool)
     def setOnboardingComplete(self, value: bool) -> None:
-        self._change(onboarding_complete=bool(value))
+        value = bool(value)
+        self._draft = replace(
+            self._draft,
+            onboarding_complete=value,
+        )
+        try:
+            self._store.settings.setValue(
+                "general/onboarding_complete",
+                value,
+            )
+            self._store.settings.sync()
+        except Exception as error:
+            self._set_apply_status(
+                f"Could not save setup state: {error}"
+            )
+            self.settingsChanged.emit()
+            return
+
+        self._saved = replace(
+            self._saved,
+            onboarding_complete=value,
+        )
+        dirty = (
+            self._draft != self._saved
+            or self._credentials_changed
+        )
+        if dirty != self._dirty:
+            self._dirty = dirty
+            self.dirtyChanged.emit()
+        self.settingsChanged.emit()
 
     @Slot(int)
     def setMaxSteps(self, value: int) -> None:
@@ -714,15 +739,18 @@ class PorterSettingsModel(QObject):
             return
 
         self._set_apply_status("Applying settings…")
+        # Set this before scheduling. The worker can complete quickly enough to
+        # emit reconfigured before reconfigure() returns.
+        self._pending_apply = True
         future = self._worker.reconfigure(
             self._draft.runtime_config(),
             self._draft.voice_config(),
             self._draft.shortcut_config(),
         )
         if future is None:
+            self._pending_apply = False
             self._set_apply_status("Porter runtime is not ready.")
             return
-        self._pending_apply = True
 
     @Slot()
     def _on_reconfigured(self) -> None:
