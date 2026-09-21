@@ -1,0 +1,5 @@
+# Keep local captures and derived datasets out of source control.
+telemetry-data/
+.porter-telemetry/
+*.sqlite3
+*.sqlite3-journal

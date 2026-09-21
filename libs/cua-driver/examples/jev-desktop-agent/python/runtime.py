@@ -24,6 +24,8 @@ from perception import NoopPerceiver, OpenRouterVisionPerceiver
 from voice import VoiceAssistant
 from porter_voice import HandsFreeVoiceConfig, HandsFreeVoiceService
 from writer import OpenRouterWriter
+from telemetry import Telemetry, TelemetryConfig
+from telemetry_agent import TelemetryAgentLoop
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ class PorterRuntimeConfig:
     enforce_policy: bool = False
     allow_foreground: bool = True
     visual_click_mode: str = "strict"
+    telemetry: TelemetryConfig | None = None
 
     def resolved_download_root(self) -> str | None:
         if self.download_root:
@@ -88,6 +91,7 @@ class PorterRuntime:
         self._cancel_event: asyncio.Event | None = None
         self._active_command_id: str | None = None
         self._started = False
+        self._telemetry = Telemetry()
 
     async def __aenter__(self) -> "PorterRuntime":
         await self.start()
@@ -153,6 +157,20 @@ class PorterRuntime:
             **payload,
         )
 
+    @property
+    def telemetry_status(self) -> dict[str, Any]:
+        return self._telemetry.status()
+
+    def _capture(self, method: str, *args, **kwargs) -> None:
+        # A telemetry fault must not interrupt a command or mask its exception.
+        try:
+            getattr(self._telemetry, method)(*args, **kwargs)
+        except Exception:
+            self._telemetry.invalidate()
+
+    async def _close_telemetry(self, telemetry: Telemetry) -> None:
+        await asyncio.to_thread(telemetry.close)
+
     def _progress(self, message: str) -> None:
         self._emit(
             "agent_progress",
@@ -200,7 +218,24 @@ class PorterRuntime:
             )
 
             driver = await stack.enter_async_context(self._driver_factory())
-            agent = self._agent_factory(
+            try:
+                telemetry_config = self.config.telemetry or TelemetryConfig.from_env()
+            except (ValueError, TypeError, OSError):
+                telemetry_config = TelemetryConfig()
+                self._emit("telemetry_disabled", "Invalid telemetry configuration; capture is off.")
+            self._telemetry = Telemetry(telemetry_config)
+            self._telemetry.start()
+            stack.push_async_callback(self._close_telemetry, self._telemetry)
+            agent_factory = self._agent_factory
+            telemetry_args: dict[str, Any] = {}
+            if self._telemetry.enabled and agent_factory is AgentLoop:
+                agent_factory = TelemetryAgentLoop
+                telemetry_args["telemetry"] = self._telemetry
+            elif self._telemetry.enabled:
+                # Custom agent factories need their own hooks; never imply a
+                # lifecycle-only capture is a complete decision trace.
+                self._telemetry.invalidate()
+            agent = agent_factory(
                 driver,
                 chooser,
                 writer=writer,
@@ -211,6 +246,7 @@ class PorterRuntime:
                 progress=self._progress,
                 enforce_policy=self.config.enforce_policy,
                 visual_click_mode=self.config.visual_click_mode,
+                **telemetry_args,
             )
         except BaseException:
             await stack.aclose()
@@ -273,6 +309,8 @@ class PorterRuntime:
         approve_consequential: bool = False,
         allow_foreground: bool | None = None,
         confirm: ConfirmationCallback | None = None,
+        input_source: str = "text",
+        utterance_id: str | None = None,
     ) -> RunResult:
         if not self._started or self._agent is None:
             raise RuntimeError("PorterRuntime must be started before submit()")
@@ -285,6 +323,9 @@ class PorterRuntime:
             cancel_event = asyncio.Event()
             self._active_command_id = command_id
             self._cancel_event = cancel_event
+            self._capture("begin_command", command_id, command,
+                          source=input_source, utterance_id=utterance_id)
+            terminal_status = "failed"
             self._emit(
                 "command_started",
                 command,
@@ -306,6 +347,9 @@ class PorterRuntime:
                     confirm=confirm,
                     cancel_event=cancel_event,
                 )
+            except asyncio.CancelledError:
+                terminal_status = "cancelled"
+                raise
             except Exception as error:
                 self._emit(
                     "command_failed",
@@ -315,6 +359,7 @@ class PorterRuntime:
                 )
                 raise
             else:
+                terminal_status = result.status
                 self._emit(
                     "command_completed",
                     result.message,
@@ -326,8 +371,13 @@ class PorterRuntime:
                 )
                 return result
             finally:
+                self._capture("end_command", terminal_status)
                 self._active_command_id = None
                 self._cancel_event = None
+
+    def capture_voice_timing(self, utterance_id: str, elapsed_ms: float, **metadata: Any) -> None:
+        """Content-free STT timing hook; transcript/audio must never be passed here."""
+        self._capture("voice_timing", utterance_id, elapsed_ms, **metadata)
 
     def cancel(self) -> bool:
         event = self._cancel_event
@@ -335,6 +385,7 @@ class PorterRuntime:
         if event is None or event.is_set():
             return False
         event.set()
+        self._capture("cancel_requested")
         self._emit(
             "command_cancel_requested",
             "Cancellation requested.",
@@ -445,6 +496,7 @@ class PorterRuntime:
             "visual_click_mode": self.config.visual_click_mode,
             "policy_enabled": self.config.enforce_policy,
             "allow_foreground": self.config.allow_foreground,
+            "telemetry": self.telemetry_status,
             "python": sys.version.split()[0],
             "platform": platform.platform(),
         }

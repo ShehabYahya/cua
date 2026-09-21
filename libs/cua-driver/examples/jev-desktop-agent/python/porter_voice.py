@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
@@ -126,11 +128,23 @@ class HandsFreeVoiceService:
             level = min(1.0, max(0.0, rms / (threshold * 1.6)))
         self._thread_emit("voice_level", "", level=level)
 
-    async def _submit_voice_command(self, text: str) -> None:
+    def _capture_stt(self, utterance_id: str, started: float, status: str) -> None:
+        hook = getattr(self.runtime, "capture_voice_timing", None)
+        if callable(hook):
+            try:
+                hook(utterance_id, (time.monotonic() - started) * 1000,
+                     status=status, model=self.config.stt_model, language=self.config.language)
+            except Exception:
+                # Telemetry is never allowed to interrupt listening or control.
+                pass
+
+    async def _submit_voice_command(self, text: str, utterance_id: str | None = None) -> None:
         try:
             await self.runtime.submit(
                 text,
                 act=True,
+                input_source="voice",
+                utterance_id=utterance_id,
             )
         except Exception as error:
             self.runtime.emit_event(
@@ -171,6 +185,8 @@ class HandsFreeVoiceService:
                     "voice_transcribing",
                     "Transcribing…",
                 )
+                utterance_id = uuid.uuid4().hex
+                stt_started = time.monotonic()
                 try:
                     text = await asyncio.to_thread(
                         self.client.transcribe_wav,
@@ -179,14 +195,17 @@ class HandsFreeVoiceService:
                         language=self.config.language,
                     )
                 except asyncio.CancelledError:
+                    self._capture_stt(utterance_id, stt_started, "cancelled")
                     raise
                 except Exception as error:
+                    self._capture_stt(utterance_id, stt_started, "failed")
                     self.runtime.emit_event(
                         "voice_error",
                         f"Transcription failed: {error}",
                     )
                     continue
 
+                self._capture_stt(utterance_id, stt_started, "transcribed")
                 transcript = text.strip()
                 if not transcript or self._stop.is_set():
                     continue
@@ -225,7 +244,7 @@ class HandsFreeVoiceService:
                     transcript=transcript,
                 )
                 command_task = asyncio.create_task(
-                    self._submit_voice_command(transcript),
+                    self._submit_voice_command(transcript, utterance_id),
                     name="porter-voice-command",
                 )
                 self._active_command = command_task
