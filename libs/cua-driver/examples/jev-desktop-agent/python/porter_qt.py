@@ -222,28 +222,31 @@ class PorterRuntimeThread(QThread):
                     "Wait for the current Porter command to finish before applying settings."
                 )
 
+            old_config = self._config
+            old_voice_config = self._voice_config
+            old_shortcut_config = self._shortcut_config
             was_listening = current.hands_free_enabled
+
             await current.stop()
 
-            replacement = PorterRuntime(
+            replacement_runtime = PorterRuntime(
                 config,
                 event_sink=self._forward_event,
             )
-            self._runtime = replacement
-            self._config = config
-            self._voice_config = voice_config
-            next_shortcut = shortcut_config or self._shortcut_config
-            try:
-                await replacement.start()
-                if voice_config.enabled and was_listening:
-                    await replacement.start_hands_free(voice_config)
-                elif voice_config.enabled:
-                    await replacement.start_hands_free(voice_config)
+            next_shortcut = shortcut_config or old_shortcut_config
 
-                if next_shortcut != self._shortcut_config:
+            try:
+                await replacement_runtime.start()
+                if voice_config.enabled:
+                    await replacement_runtime.start_hands_free(
+                        voice_config
+                    )
+
+                if next_shortcut != old_shortcut_config:
                     old_service = self._shortcut_service
                     if old_service is not None:
                         await old_service.stop()
+
                     new_service = GlobalShortcutPortal(
                         next_shortcut,
                         on_activated=lambda: self.shortcutActivated.emit(),
@@ -252,7 +255,6 @@ class PorterRuntimeThread(QThread):
                         ),
                     )
                     self._shortcut_service = new_service
-                    self._shortcut_config = next_shortcut
                     if next_shortcut.enabled:
                         try:
                             await new_service.start()
@@ -264,9 +266,41 @@ class PorterRuntimeThread(QThread):
                         self.shortcutStatusChanged.emit(
                             "Global shortcut disabled"
                         )
-            except Exception:
-                await replacement.stop()
+            except Exception as error:
+                try:
+                    await replacement_runtime.stop()
+                except Exception:
+                    pass
+
+                # Keep settings failures non-destructive. If the proposed
+                # runtime cannot start, restore the previous backend instead of
+                # leaving Porter dead until a manual restart.
+                rollback_error = None
+                try:
+                    await current.start()
+                    if old_voice_config.enabled and was_listening:
+                        await current.start_hands_free(
+                            old_voice_config
+                        )
+                except Exception as rollback:
+                    rollback_error = rollback
+
+                self._runtime = current
+                self._config = old_config
+                self._voice_config = old_voice_config
+                self._shortcut_config = old_shortcut_config
+
+                if rollback_error is not None:
+                    raise RuntimeError(
+                        f"{error}; previous backend also failed to restart: "
+                        f"{rollback_error}"
+                    ) from error
                 raise
+
+            self._runtime = replacement_runtime
+            self._config = config
+            self._voice_config = voice_config
+            self._shortcut_config = next_shortcut
             self.reconfigured.emit()
 
         future = asyncio.run_coroutine_threadsafe(apply(), loop)
