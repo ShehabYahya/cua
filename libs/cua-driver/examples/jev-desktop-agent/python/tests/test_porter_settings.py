@@ -11,7 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
-    from PySide6.QtCore import QSettings
+    from PySide6.QtCore import QObject, QSettings, Signal
 except ModuleNotFoundError as error:
     raise unittest.SkipTest(
         "PySide6 is an optional native-GUI dependency"
@@ -20,6 +20,7 @@ except ModuleNotFoundError as error:
 from porter_settings import (
     AutostartManager,
     PorterAppSettings,
+    PorterSettingsModel,
     PorterSettingsStore,
     SecretStore,
 )
@@ -37,6 +38,21 @@ class FakeKeyring:
 
     def delete_password(self, service, name):
         self.values.pop((service, name), None)
+
+
+class ImmediateWorker(QObject):
+    reconfigured = Signal()
+    reconfigureFailed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def reconfigure(self, runtime, voice, shortcut):
+        self.calls.append((runtime, voice, shortcut))
+        # Deliberately emit before returning to catch the historical apply race.
+        self.reconfigured.emit()
+        return object()
 
 
 class PorterSettingsTest(unittest.TestCase):
@@ -127,6 +143,72 @@ class PorterSettingsTest(unittest.TestCase):
                     os.environ.get(SecretStore.OPENROUTER),
                     "secret-openrouter",
                 )
+
+    def test_apply_handles_immediate_reconfigure_signal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = Path(tmp) / "porter.ini"
+            store = PorterSettingsStore(
+                QSettings(str(qpath), QSettings.IniFormat)
+            )
+            store.save(PorterAppSettings())
+
+            worker = ImmediateWorker()
+            model = PorterSettingsModel(
+                worker,
+                store=store,
+                secrets=SecretStore(FakeKeyring()),
+                autostart=AutostartManager(
+                    ["/opt/porter/porter"],
+                    path=Path(tmp) / "autostart.desktop",
+                ),
+            )
+
+            model.setVisualClickMode("permissive")
+            self.assertTrue(model.dirty)
+            model.apply()
+
+            self.assertFalse(model.dirty)
+            self.assertEqual(
+                store.load().visual_click_mode,
+                "permissive",
+            )
+            self.assertEqual(model.applyStatus, "Settings applied.")
+
+    def test_finished_onboarding_stays_finished_without_live_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = Path(tmp) / "porter.ini"
+            store = PorterSettingsStore(
+                QSettings(str(qpath), QSettings.IniFormat)
+            )
+            store.save(PorterAppSettings())
+
+            worker = ImmediateWorker()
+            keyring = FakeKeyring()
+            autostart = AutostartManager(
+                ["/opt/porter/porter"],
+                path=Path(tmp) / "autostart.desktop",
+            )
+            model = PorterSettingsModel(
+                worker,
+                store=store,
+                secrets=SecretStore(keyring),
+                autostart=autostart,
+            )
+            self.assertTrue(model.needsOnboarding)
+
+            model.setOnboardingComplete(True)
+            self.assertFalse(model.needsOnboarding)
+
+            restored = PorterSettingsModel(
+                ImmediateWorker(),
+                store=PorterSettingsStore(
+                    QSettings(str(qpath), QSettings.IniFormat)
+                ),
+                secrets=SecretStore(FakeKeyring()),
+                autostart=autostart,
+            )
+            self.assertTrue(restored.onboardingComplete)
+            self.assertFalse(restored.needsOnboarding)
 
     def test_autostart_file_is_created_and_removed(self):
         with tempfile.TemporaryDirectory() as tmp:
