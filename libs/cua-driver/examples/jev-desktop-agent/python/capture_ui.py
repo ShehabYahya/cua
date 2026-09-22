@@ -7,7 +7,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QSettings, QTimer, QUrl
+from PySide6.QtCore import QCoreApplication, QEventLoop, QSettings, QTimer, QUrl
 from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -61,6 +61,12 @@ def _save(window, path: Path) -> None:
         raise RuntimeError(f"Could not save {path}")
 
 
+def _settle_animations(milliseconds: int = 240) -> None:
+    loop = QEventLoop()
+    QTimer.singleShot(milliseconds, loop.quit)
+    loop.exec()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Capture screenshots from Porter's real Qt/QML UI"
@@ -107,8 +113,9 @@ def main() -> int:
         preview.runtime_config(),
         preview.voice_config(),
         preview.shortcut_config(),
+        parent=app,
     )
-    porter = PorterViewModel(worker)
+    porter = PorterViewModel(worker, parent=app)
     porter._set_state("ready")
     porter._set_status("Ready")
     porter._set_detail("Porter is connected to your desktop")
@@ -125,8 +132,9 @@ def main() -> int:
         store=store,
         secrets=secrets,
         autostart=autostart,
+        parent=app,
     )
-    maintenance = PorterMaintenanceModel()
+    maintenance = PorterMaintenanceModel(parent=app)
 
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("porter", porter)
@@ -157,6 +165,7 @@ def main() -> int:
         def capture() -> None:
             main_window.setProperty("currentPage", index)
             app.processEvents()
+            _settle_animations()
             _save(main_window, output / filename)
 
         steps.append((filename, capture))
@@ -192,6 +201,7 @@ def main() -> int:
         porter.diagnosticsChanged.emit()
         main_window.setProperty("currentPage", 7)
         app.processEvents()
+        _settle_animations()
         _save(main_window, output / "08-advanced-diagnostics.png")
 
     steps.append(("08-advanced-diagnostics.png", diagnostics))
@@ -199,6 +209,7 @@ def main() -> int:
     def about_updates() -> None:
         main_window.setProperty("currentPage", 8)
         app.processEvents()
+        _settle_animations()
         _save(main_window, output / "09-about-updates.png")
 
     steps.append(("09-about-updates.png", about_updates))
@@ -230,6 +241,7 @@ def main() -> int:
         settings_model.settingsChanged.emit()
         main_window.setProperty("currentPage", 0)
         app.processEvents()
+        _settle_animations()
         _save(main_window, output / "11-first-run-onboarding.png")
 
     steps.append(("11-first-run-onboarding.png", onboarding))

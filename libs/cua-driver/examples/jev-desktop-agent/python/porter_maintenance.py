@@ -34,9 +34,34 @@ class ReleaseInfo:
     url: str
 
 
-def version_key(value: str) -> tuple[int, ...]:
-    parts = [int(item) for item in re.findall(r"\d+", value)]
-    return tuple(parts[:4]) or (0,)
+_SEMVER = re.compile(
+    r"^v?(?P<major>0|[1-9]\d*)\."
+    r"(?P<minor>0|[1-9]\d*)\."
+    r"(?P<patch>0|[1-9]\d*)"
+    r"(?:-(?P<prerelease>[0-9A-Za-z.-]+))?"
+    r"(?:\+[0-9A-Za-z.-]+)?$"
+)
+
+
+def version_key(value: str) -> tuple[Any, ...]:
+    """Return a sortable SemVer key where a stable build beats its prerelease."""
+
+    match = _SEMVER.fullmatch(value.strip())
+    if match is None:
+        return (0, 0, 0, 0, ())
+    prerelease = match.group("prerelease")
+    prerelease_key = tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in (prerelease or "").split(".")
+        if part
+    )
+    return (
+        int(match.group("major")),
+        int(match.group("minor")),
+        int(match.group("patch")),
+        0 if prerelease else 1,
+        prerelease_key,
+    )
 
 
 def latest_porter_release(payload: Any) -> ReleaseInfo | None:

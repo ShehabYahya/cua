@@ -9,6 +9,7 @@ Window {
     width: 700
     height: 104
     minimumWidth: 540
+    maximumWidth: 960
     maximumHeight: 104
     visible: false
     color: "transparent"
@@ -27,6 +28,32 @@ Window {
         : hovered
             ? settingsModel.compactHoverOpacity
             : settingsModel.compactIdleOpacity
+
+    onVisibleChanged: {
+        if (visible) {
+            Qt.callLater(function() {
+                commandField.forceActiveFocus()
+            })
+        }
+    }
+
+    Shortcut {
+        sequence: "Escape"
+        onActivated: root.hide()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+L"
+        onActivated: {
+            commandField.forceActiveFocus()
+            commandField.selectAll()
+        }
+    }
+
+    Behavior on panelOpacity {
+        enabled: settingsModel.animationsEnabled
+        NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+    }
 
     readonly property string requestStatus: {
         const detail = porter.detailText || ""
@@ -116,6 +143,9 @@ Window {
                 Layout.preferredWidth: 22
                 Layout.fillHeight: true
 
+                Accessible.role: Accessible.Grip
+                Accessible.name: "Move Quick Bar"
+
                 Text {
                     anchors.centerIn: parent
                     text: "⠿"
@@ -167,6 +197,10 @@ Window {
                     leftPadding: 12
                     rightPadding: 12
                     selectByMouse: true
+                    activeFocusOnTab: true
+
+                    Accessible.name: "Porter command"
+                    Accessible.description: "Type a desktop task and press Enter to run it"
 
                     background: Rectangle {
                         radius: 11
@@ -198,6 +232,7 @@ Window {
                     ) ? Font.DemiBold : Font.Normal
                     elide: Text.ElideRight
                     maximumLineCount: 1
+                    Accessible.name: text
                 }
             }
 
@@ -207,6 +242,14 @@ Window {
                 Layout.preferredHeight: 42
                 enabled: !porter.busy
                 text: porter.listening ? "●" : "◉"
+                hoverEnabled: true
+                focusPolicy: Qt.StrongFocus
+                Accessible.name: porter.listening
+                    ? "Mute hands-free listening"
+                    : "Enable hands-free listening"
+                ToolTip.visible: hovered
+                ToolTip.text: Accessible.name
+                ToolTip.delay: 550
 
                 contentItem: Text {
                     text: voiceButton.text
@@ -231,6 +274,12 @@ Window {
                 Layout.preferredWidth: 42
                 Layout.preferredHeight: 42
                 text: "⚙"
+                hoverEnabled: true
+                focusPolicy: Qt.StrongFocus
+                Accessible.name: "Open Porter settings"
+                ToolTip.visible: hovered
+                ToolTip.text: Accessible.name
+                ToolTip.delay: 550
 
                 contentItem: Text {
                     text: mainButton.text
@@ -256,6 +305,12 @@ Window {
                 Layout.preferredWidth: 42
                 Layout.preferredHeight: 42
                 text: porter.busy ? "×" : "→"
+                hoverEnabled: true
+                focusPolicy: Qt.StrongFocus
+                Accessible.name: porter.busy ? "Cancel current task" : "Run command"
+                ToolTip.visible: hovered
+                ToolTip.text: Accessible.name
+                ToolTip.delay: 550
 
                 contentItem: Text {
                     text: submitButton.text

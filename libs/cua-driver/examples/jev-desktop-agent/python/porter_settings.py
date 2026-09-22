@@ -331,6 +331,7 @@ class PorterSettingsModel(QObject):
     settingsChanged = Signal()
     credentialsChanged = Signal()
     dirtyChanged = Signal()
+    applyingChanged = Signal()
     applyStatusChanged = Signal()
 
     def __init__(
@@ -353,6 +354,7 @@ class PorterSettingsModel(QObject):
         self._dirty = False
         self._apply_status = ""
         self._pending_apply = False
+        self._apply_snapshot: PorterAppSettings | None = None
 
         worker.reconfigured.connect(self._on_reconfigured)
         worker.reconfigureFailed.connect(self._on_reconfigure_failed)
@@ -488,6 +490,10 @@ class PorterSettingsModel(QObject):
     @Property(bool, notify=dirtyChanged)
     def dirty(self) -> bool:
         return self._dirty
+
+    @Property(bool, notify=applyingChanged)
+    def applying(self) -> bool:
+        return self._pending_apply
 
     @Property(str, notify=applyStatusChanged)
     def applyStatus(self) -> str:
@@ -636,6 +642,9 @@ class PorterSettingsModel(QObject):
         self._change(max_candidates=max(4, min(32, int(value))))
 
     def _save_secret(self, name: str, value: str) -> None:
+        if self._pending_apply:
+            self._set_apply_status("Wait for the current settings update to finish.")
+            return
         cleaned = value.strip()
         if not cleaned:
             self._set_apply_status("Enter a non-empty API key.")
@@ -666,6 +675,9 @@ class PorterSettingsModel(QObject):
 
     @Slot()
     def clearOpenRouterKey(self) -> None:
+        if self._pending_apply:
+            self._set_apply_status("Wait for the current settings update to finish.")
+            return
         self._secrets.delete(SecretStore.OPENROUTER)
         os.environ.pop(SecretStore.OPENROUTER, None)
         self._credentials_changed = True
@@ -680,6 +692,9 @@ class PorterSettingsModel(QObject):
 
     @Slot()
     def clearTypeSafeKey(self) -> None:
+        if self._pending_apply:
+            self._set_apply_status("Wait for the current settings update to finish.")
+            return
         self._secrets.delete(SecretStore.TYPESAFE)
         os.environ.pop(SecretStore.TYPESAFE, None)
         self._credentials_changed = True
@@ -694,6 +709,9 @@ class PorterSettingsModel(QObject):
 
     @Slot()
     def revert(self) -> None:
+        if self._pending_apply:
+            self._set_apply_status("Wait for the current settings update to finish.")
+            return
         self._draft = self._saved
         dirty = self._credentials_changed
         changed = dirty != self._dirty
@@ -707,18 +725,19 @@ class PorterSettingsModel(QObject):
             else "Changes reverted."
         )
 
-    def _persist_current(self, success_message: str) -> bool:
+    def _persist(self, value: PorterAppSettings, success_message: str) -> bool:
         try:
-            self._store.save(self._draft)
-            self._autostart.set_enabled(self._draft.start_at_login)
+            self._store.save(value)
+            self._autostart.set_enabled(value.start_at_login)
         except Exception as error:
             self._set_apply_status(f"Could not save settings: {error}")
             return False
-        self._saved = self._draft
+        self._saved = value
         self._credentials_changed = False
         self.settingsChanged.emit()
-        if self._dirty:
-            self._dirty = False
+        dirty = self._draft != self._saved
+        if dirty != self._dirty:
+            self._dirty = dirty
             self.dirtyChanged.emit()
         self._set_apply_status(success_message)
         return True
@@ -735,20 +754,25 @@ class PorterSettingsModel(QObject):
             or self._draft.shortcut_config() != self._saved.shortcut_config()
         )
         if not backend_changed:
-            self._persist_current("Settings saved.")
+            self._persist(self._draft, "Settings saved.")
             return
 
         self._set_apply_status("Applying settings…")
         # Set this before scheduling. The worker can complete quickly enough to
         # emit reconfigured before reconfigure() returns.
+        snapshot = self._draft
+        self._apply_snapshot = snapshot
         self._pending_apply = True
+        self.applyingChanged.emit()
         future = self._worker.reconfigure(
-            self._draft.runtime_config(),
-            self._draft.voice_config(),
-            self._draft.shortcut_config(),
+            snapshot.runtime_config(),
+            snapshot.voice_config(),
+            snapshot.shortcut_config(),
         )
         if future is None:
             self._pending_apply = False
+            self._apply_snapshot = None
+            self.applyingChanged.emit()
             self._set_apply_status("Porter runtime is not ready.")
             return
 
@@ -756,8 +780,19 @@ class PorterSettingsModel(QObject):
     def _on_reconfigured(self) -> None:
         if not self._pending_apply:
             return
+        snapshot = self._apply_snapshot
         self._pending_apply = False
-        if not self._persist_current("Settings applied."):
+        self._apply_snapshot = None
+        self.applyingChanged.emit()
+        if snapshot is None:
+            self._set_apply_status("Settings update completed without a snapshot.")
+            return
+        success = (
+            "Settings applied. Newer edits are still unsaved."
+            if self._draft != snapshot
+            else "Settings applied."
+        )
+        if not self._persist(snapshot, success):
             self._set_apply_status(
                 "Runtime updated, but settings could not be saved."
             )
@@ -767,4 +802,6 @@ class PorterSettingsModel(QObject):
         if not self._pending_apply:
             return
         self._pending_apply = False
+        self._apply_snapshot = None
+        self.applyingChanged.emit()
         self._set_apply_status(f"Could not apply settings: {message}")

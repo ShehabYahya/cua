@@ -91,7 +91,7 @@ Item {
                         font.weight: Font.DemiBold
                     }
 
-                    ComboBox {
+                    AuroraComboBox {
                         id: providerBox
                         Layout.fillWidth: true
                         model: ["OpenRouter", "TypeSafe"]
@@ -254,9 +254,9 @@ Item {
                 }
 
                 AuroraButton {
-                    text: "Finish setup"
+                    text: settingsModel.applying ? "Finishing…" : "Finish setup"
                     primary: true
-                    enabled: (
+                    enabled: !settingsModel.applying && (
                         apiKey.text.trim().length > 0
                         || (
                             providerBox.currentIndex === 0

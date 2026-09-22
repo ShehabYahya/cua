@@ -156,8 +156,11 @@ class PorterRuntimeThread(QThread):
     @Slot(str)
     def submit(self, command: str) -> None:
         text = command.strip()
+        if not text:
+            return
         runtime = self._runtime
-        if not text or runtime is None:
+        if runtime is None:
+            self.commandFailed.emit("Porter runtime is not ready.")
             return
 
         future = self._schedule(
@@ -184,6 +187,7 @@ class PorterRuntimeThread(QThread):
     def setListening(self, enabled: bool) -> None:
         runtime = self._runtime
         if runtime is None:
+            self.commandFailed.emit("Porter runtime is not ready.")
             return
         future = self._schedule(
             runtime.set_hands_free(
@@ -707,6 +711,7 @@ class PorterViewModel(QObject):
 
     @Slot()
     def _on_runtime_ready(self) -> None:
+        self._set_busy(False)
         self._set_state("ready")
         self._set_status("Ready")
         self._set_detail("Porter is connected to your desktop")
@@ -726,6 +731,12 @@ class PorterViewModel(QObject):
         if status == "completed":
             self._set_state("ready")
             self._set_status("Done")
+        elif status == "cancelled":
+            self._set_state("ready")
+            self._set_status("Cancelled")
+        else:
+            self._set_state("attention")
+            self._set_status(status.replace("_", " ").title())
         self._set_detail(message)
 
     @Slot(str)

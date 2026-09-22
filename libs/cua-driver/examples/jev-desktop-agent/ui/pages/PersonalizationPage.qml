@@ -31,16 +31,16 @@ Item {
 
             AuroraButton {
                 text: "Revert"
-                visible: settingsModel.dirty
-                enabled: settingsModel.dirty
+                visible: settingsModel.dirty || settingsModel.applying
+                enabled: settingsModel.dirty && !settingsModel.applying
                 onClicked: settingsModel.revert()
             }
 
             AuroraButton {
-                text: "Apply"
-                visible: settingsModel.dirty
+                text: settingsModel.applying ? "Applying…" : "Apply"
+                visible: settingsModel.dirty || settingsModel.applying
                 primary: true
-                enabled: settingsModel.dirty
+                enabled: settingsModel.dirty && !settingsModel.applying
                 onClicked: settingsModel.apply()
             }
         }
