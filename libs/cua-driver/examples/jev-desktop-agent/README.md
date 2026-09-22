@@ -371,7 +371,7 @@ On an Ubuntu/Debian build machine:
 
 ```bash
 cd ~/cua/libs/cua-driver/examples/jev-desktop-agent
-bash packaging/linux/build-deb.sh 0.1.0
+bash packaging/linux/build-deb.sh 0.1.1
 ```
 
 The build uses the committed `uv.lock` with `uv sync --locked`, then uses
@@ -380,13 +380,13 @@ It stages the desktop file, Porter ring icon, AppStream metadata, Porter's MIT
 license, and generated notices for bundled third-party dependencies into:
 
 ```text
-dist/porter_0.1.0_<arch>.deb
+dist/porter_0.1.1_<arch>.deb
 ```
 
 Install the resulting package with:
 
 ```bash
-sudo apt install ./dist/porter_0.1.0_amd64.deb
+sudo apt install ./dist/porter_0.1.1_amd64.deb
 ```
 
 The installed launcher is `/usr/bin/porter`, backed by the private executable
@@ -400,10 +400,10 @@ Package CI validates the desktop and AppStream metadata, runs Lintian, and
 exercises installation, same-version upgrade/reinstallation, and removal on a
 clean Ubuntu runner before the package is accepted.
 
-### Porter v0.1.0 release path
+### Porter v0.1.1 release path
 
-The release identity is `porter-v0.1.0`. Release notes live in
-`packaging/RELEASE_NOTES_0.1.0.md`.
+The release identity is `porter-v0.1.1`. Release notes live in
+`packaging/RELEASE_NOTES_0.1.1.md`.
 
 The `Release: Porter` GitHub Actions workflow can be run manually after this
 branch is on the default branch, or automatically by pushing a matching
