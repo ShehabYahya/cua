@@ -349,6 +349,12 @@ class PorterRuntime:
                 )
             except asyncio.CancelledError:
                 terminal_status = "cancelled"
+                self._emit(
+                    "command_completed",
+                    "Command cancelled.",
+                    command_id=command_id,
+                    status="cancelled",
+                )
                 raise
             except Exception as error:
                 self._emit(

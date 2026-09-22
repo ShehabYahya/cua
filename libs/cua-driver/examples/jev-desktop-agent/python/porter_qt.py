@@ -61,6 +61,7 @@ class PorterRuntimeThread(QThread):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runtime: PorterRuntime | None = None
         self._shutdown_requested = False
+        self._terminal_event_serial = 0
 
     def run(self) -> None:
         loop = asyncio.new_event_loop()
@@ -141,6 +142,8 @@ class PorterRuntimeThread(QThread):
         return self._shortcut_config
 
     def _forward_event(self, event: RuntimeEvent) -> None:
+        if event.kind in {"command_completed", "command_failed"}:
+            self._terminal_event_serial += 1
         self.eventReceived.emit(event)
 
     def _schedule(self, coroutine) -> concurrent.futures.Future | None:
@@ -172,14 +175,17 @@ class PorterRuntimeThread(QThread):
         if future is None:
             self.commandFailed.emit("Porter runtime is not ready.")
             return
+        terminal_event_serial = self._terminal_event_serial
 
         def finished(done: concurrent.futures.Future) -> None:
             try:
                 result = done.result()
             except Exception as error:
-                self.commandFailed.emit(str(error))
+                if self._terminal_event_serial == terminal_event_serial:
+                    self.commandFailed.emit(str(error))
                 return
-            self.commandFinished.emit(result.status, result.message)
+            if self._terminal_event_serial == terminal_event_serial:
+                self.commandFinished.emit(result.status, result.message)
 
         future.add_done_callback(finished)
 
@@ -642,12 +648,14 @@ class PorterViewModel(QObject):
                     self._voice_silence_seconds = value
                     self.voiceSilenceSecondsChanged.emit()
             if not self._busy:
+                self._set_state("ready")
                 self._set_status("Listening")
                 self._set_detail("Speak naturally — Porter will submit when you stop")
         elif kind == "voice_listening_stopped":
             self._set_listening(False)
             self._set_mic_level(0.0)
             if not self._busy:
+                self._set_state("ready")
                 self._set_status("Ready")
                 self._set_detail("Type a command or enable hands-free listening")
         elif kind == "voice_speech_started":
@@ -682,6 +690,11 @@ class PorterViewModel(QObject):
             self._set_listening(False)
             self._set_state("attention")
             self._set_status("Voice unavailable")
+            self._set_detail(event.message)
+        elif kind == "voice_transcription_failed":
+            self._set_mic_level(0.0)
+            self._set_state("attention")
+            self._set_status("Transcription failed — still listening")
             self._set_detail(event.message)
         elif kind in {"voice_error", "voice_command_failed"}:
             self._set_listening(False)

@@ -18,6 +18,7 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_app.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_qt.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_maintenance.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_single_instance.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_visual_click_mode.py"
@@ -45,6 +46,7 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_app.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_qt.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_maintenance.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_single_instance.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_visual_click_mode.py"
@@ -104,6 +106,7 @@ jobs:
           uv run --extra gui python -m unittest python/tests/test_porter_voice.py -v
           uv run --extra gui python -m unittest python/tests/test_porter_settings.py -v
           uv run --extra gui python -m unittest python/tests/test_porter_app.py -v
+          uv run --extra gui python -m unittest python/tests/test_porter_qt.py -v
           uv run --extra gui python -m unittest python/tests/test_porter_maintenance.py -v
           uv run --extra gui python -m unittest python/tests/test_single_instance.py -v
           uv run --extra gui python -m unittest python/tests/test_visual_click_mode.py -v

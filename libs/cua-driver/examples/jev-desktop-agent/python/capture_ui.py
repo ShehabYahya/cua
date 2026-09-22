@@ -72,6 +72,8 @@ def main() -> int:
         description="Capture screenshots from Porter's real Qt/QML UI"
     )
     parser.add_argument("output", type=Path)
+    parser.add_argument("--width", type=int, default=1180)
+    parser.add_argument("--height", type=int, default=760)
     args = parser.parse_args()
 
     QCoreApplication.setOrganizationName("Porter")
@@ -153,8 +155,8 @@ def main() -> int:
 
     main_window = _find_root(engine, "mainWindow")
     compact_window = _find_root(engine, "compactWindow")
-    main_window.setWidth(1180)
-    main_window.setHeight(760)
+    main_window.setWidth(max(main_window.minimumWidth(), args.width))
+    main_window.setHeight(max(main_window.minimumHeight(), args.height))
     main_window.show()
 
     output = args.output.resolve()
@@ -222,10 +224,52 @@ def main() -> int:
         porter._set_status("Ready")
         porter._set_detail("Porter is connected to your desktop")
         app.processEvents()
+        _settle_animations()
         _save(compact_window, output / "10-compact-bar.png")
         compact_window.hide()
 
     steps.append(("10-compact-bar.png", compact_idle))
+
+    def compact_listening() -> None:
+        compact_window.show()
+        porter._set_busy(False)
+        porter._set_listening(True)
+        porter._set_state("listening")
+        porter._set_status("Listening…")
+        porter._set_detail("Keep speaking")
+        app.processEvents()
+        _settle_animations()
+        _save(compact_window, output / "12-compact-listening.png")
+        compact_window.hide()
+
+    steps.append(("12-compact-listening.png", compact_listening))
+
+    def compact_working() -> None:
+        compact_window.show()
+        porter._set_listening(False)
+        porter._set_busy(True)
+        porter._set_state("working")
+        porter._set_status("Opening Settings…")
+        porter._set_detail("Finding the system application")
+        app.processEvents()
+        _settle_animations()
+        _save(compact_window, output / "13-compact-working.png")
+        compact_window.hide()
+
+    steps.append(("13-compact-working.png", compact_working))
+
+    def compact_error() -> None:
+        compact_window.show()
+        porter._set_busy(False)
+        porter._set_state("error")
+        porter._set_status("Failed")
+        porter._set_detail("Settings could not be opened")
+        app.processEvents()
+        _settle_animations()
+        _save(compact_window, output / "14-compact-error.png")
+        compact_window.hide()
+
+    steps.append(("14-compact-error.png", compact_error))
 
     def onboarding() -> None:
         keyring.delete_password(
@@ -239,6 +283,9 @@ def main() -> int:
         settings_model._draft = settings_model._saved
         settings_model.credentialsChanged.emit()
         settings_model.settingsChanged.emit()
+        porter._set_state("ready")
+        porter._set_status("Ready")
+        porter._set_detail("Porter is connected to your desktop")
         main_window.setProperty("currentPage", 0)
         app.processEvents()
         _settle_animations()

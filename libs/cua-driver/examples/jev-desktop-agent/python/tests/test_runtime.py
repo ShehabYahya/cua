@@ -81,6 +81,11 @@ class FakeAgent:
         )
 
 
+class CancelledAgent(FakeAgent):
+    async def run(self, goal, **kwargs):
+        raise asyncio.CancelledError()
+
+
 class RuntimeTest(unittest.TestCase):
     def test_event_bus_observer_failure_is_isolated(self):
         bus = RuntimeEventBus()
@@ -205,6 +210,41 @@ class RuntimeTest(unittest.TestCase):
         )
         self.assertIsNotNone(started.command_id)
         self.assertEqual(started.command_id, completed.command_id)
+
+    def test_cancelled_coroutine_emits_terminal_cancelled_event(self):
+        events = []
+
+        async def scenario():
+            runtime = PorterRuntime(
+                PorterRuntimeConfig(
+                    provider="typesafe",
+                    vision_enabled=False,
+                ),
+                event_sink=events.append,
+                chooser_factory=lambda provider, model=None: FakeChooser(),
+                driver_factory=FakeDriver,
+                agent_factory=CancelledAgent,
+            )
+            await runtime.start()
+            try:
+                with self.assertRaises(asyncio.CancelledError):
+                    await runtime.submit("Open Firefox")
+            finally:
+                await runtime.stop()
+
+        with patch.dict(
+            "os.environ",
+            {"TYPESAFE_API_KEY": "test", "OPENROUTER_API_KEY": ""},
+            clear=False,
+        ):
+            asyncio.run(scenario())
+
+        completed = [
+            event for event in events if event.kind == "command_completed"
+        ]
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].data["status"], "cancelled")
+        self.assertEqual(completed[0].message, "Command cancelled.")
 
 
 if __name__ == "__main__":

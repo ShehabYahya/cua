@@ -68,6 +68,7 @@ class HandsFreeVoiceService:
         self._task: asyncio.Task | None = None
         self._active_command: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._last_level_emit = 0.0
 
     @property
     def running(self) -> bool:
@@ -126,6 +127,10 @@ class HandsFreeVoiceService:
             level = 0.0
         else:
             level = min(1.0, max(0.0, rms / (threshold * 1.6)))
+        now = time.monotonic()
+        if now - self._last_level_emit < 0.05:
+            return
+        self._last_level_emit = now
         self._thread_emit("voice_level", "", level=level)
 
     def _capture_stt(self, utterance_id: str, started: float, status: str) -> None:
@@ -200,7 +205,7 @@ class HandsFreeVoiceService:
                 except Exception as error:
                     self._capture_stt(utterance_id, stt_started, "failed")
                     self.runtime.emit_event(
-                        "voice_error",
+                        "voice_transcription_failed",
                         f"Transcription failed: {error}",
                     )
                     continue

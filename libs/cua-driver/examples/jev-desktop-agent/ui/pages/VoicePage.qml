@@ -3,9 +3,13 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "../components"
 
-Item {
+ScrollView {
+    id: pageScroll
+    clip: true
+    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
     ColumnLayout {
-        anchors.fill: parent
+        width: pageScroll.availableWidth
         spacing: 20
 
         Text {
@@ -164,7 +168,7 @@ Item {
 
         AuroraCard {
             Layout.fillWidth: true
-            Layout.fillHeight: true
+            Layout.preferredHeight: 242
             glassOpacity: 0.46
 
             ColumnLayout {

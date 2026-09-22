@@ -48,6 +48,11 @@ class FakeClient:
         return self.transcript
 
 
+class FailingClient:
+    def transcribe_wav(self, wav, *, model, language):
+        raise TimeoutError("temporary timeout")
+
+
 class FakeRuntime:
     def __init__(self, *, busy: bool = False) -> None:
         self._busy = busy
@@ -141,6 +146,54 @@ class PorterVoiceTest(unittest.TestCase):
 
         kinds = [kind for kind, _, _ in runtime.events]
         self.assertIn("voice_cancel_requested", kinds)
+
+    def test_transcription_failure_is_recoverable_and_keeps_listening(self):
+        runtime = FakeRuntime()
+
+        async def scenario():
+            service = HandsFreeVoiceService(
+                runtime,
+                FailingClient(),
+                microphone_factory=FakeMicrophone,
+            )
+            await service.start()
+            for _ in range(100):
+                if any(
+                    kind == "voice_transcription_failed"
+                    for kind, _, _ in runtime.events
+                ):
+                    break
+                await asyncio.sleep(0.01)
+
+            self.assertTrue(service.running)
+            await service.stop()
+
+        asyncio.run(scenario())
+
+        kinds = [kind for kind, _, _ in runtime.events]
+        self.assertIn("voice_transcription_failed", kinds)
+        self.assertNotIn("voice_error", kinds)
+
+    def test_microphone_level_events_are_throttled(self):
+        runtime = FakeRuntime()
+        service = HandsFreeVoiceService(
+            runtime,
+            FakeClient("unused"),
+            microphone_factory=FakeMicrophone,
+        )
+
+        async def scenario():
+            service._loop = asyncio.get_running_loop()
+            for _ in range(100):
+                service._on_level(0.04, 0.02)
+            await asyncio.sleep(0)
+
+        asyncio.run(scenario())
+
+        levels = [
+            event for event in runtime.events if event[0] == "voice_level"
+        ]
+        self.assertEqual(len(levels), 1)
 
 
 if __name__ == "__main__":
