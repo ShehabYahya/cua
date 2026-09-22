@@ -59,6 +59,7 @@ class FakeRuntime:
         self.events = []
         self.submitted = []
         self.cancelled = 0
+        self.tts_pause_event = threading.Event()
 
     @property
     def busy(self) -> bool:

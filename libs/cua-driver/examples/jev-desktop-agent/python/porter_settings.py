@@ -26,6 +26,10 @@ class PorterAppSettings:
     voice_language: str = ""
     voice_silence: float = 0.55
     hands_free: bool = True
+    tts_enabled: bool = True
+    tts_model: str = "qwen3-tts-1.7b-customvoice"
+    tts_voice: str = "Vivian"
+    tts_language: str = "English"
     microphone_device: int | None = None
     download_root: str = ""
     confirm_actions: bool = False
@@ -56,6 +60,10 @@ class PorterAppSettings:
             enforce_policy=self.confirm_actions,
             allow_foreground=self.allow_foreground,
             visual_click_mode=self.visual_click_mode,
+            tts_enabled=self.tts_enabled,
+            tts_model=self.tts_model.strip(),
+            tts_voice=self.tts_voice.strip(),
+            tts_language=self.tts_language.strip(),
         )
 
     def voice_config(self) -> HandsFreeVoiceConfig:
@@ -173,6 +181,10 @@ class PorterSettingsStore:
                 10.0,
             ),
             hands_free=self._bool(s.value("voice/hands_free", True), True),
+            tts_enabled=self._bool(s.value("voice/tts_enabled", True), True),
+            tts_model=str(s.value("voice/tts_model", "qwen3-tts-1.7b-customvoice")),
+            tts_voice=str(s.value("voice/tts_voice", "Vivian")),
+            tts_language=str(s.value("voice/tts_language", "English")),
             microphone_device=self._int_or_none(
                 s.value("voice/microphone_device", None)
             ),
@@ -249,6 +261,10 @@ class PorterSettingsStore:
         s.setValue("voice/language", value.voice_language)
         s.setValue("voice/silence", value.voice_silence)
         s.setValue("voice/hands_free", value.hands_free)
+        s.setValue("voice/tts_enabled", value.tts_enabled)
+        s.setValue("voice/tts_model", value.tts_model)
+        s.setValue("voice/tts_voice", value.tts_voice)
+        s.setValue("voice/tts_language", value.tts_language)
         s.setValue(
             "voice/microphone_device",
             -1 if value.microphone_device is None else value.microphone_device,
@@ -477,6 +493,22 @@ class PorterSettingsModel(QObject):
     def handsFree(self) -> bool:
         return self._draft.hands_free
 
+    @Property(bool, notify=settingsChanged)
+    def ttsEnabled(self) -> bool:
+        return self._draft.tts_enabled
+
+    @Property(str, notify=settingsChanged)
+    def ttsModel(self) -> str:
+        return self._draft.tts_model
+
+    @Property(str, notify=settingsChanged)
+    def ttsVoice(self) -> str:
+        return self._draft.tts_voice
+
+    @Property(str, notify=settingsChanged)
+    def ttsLanguage(self) -> str:
+        return self._draft.tts_language
+
     @Property(str, notify=settingsChanged)
     def downloadRoot(self) -> str:
         return self._draft.download_root
@@ -600,6 +632,22 @@ class PorterSettingsModel(QObject):
     @Slot(bool)
     def setHandsFree(self, value: bool) -> None:
         self._change(hands_free=bool(value))
+
+    @Slot(bool)
+    def setTtsEnabled(self, value: bool) -> None:
+        self._change(tts_enabled=bool(value))
+
+    @Slot(str)
+    def setTtsModel(self, value: str) -> None:
+        self._change(tts_model=value)
+
+    @Slot(str)
+    def setTtsVoice(self, value: str) -> None:
+        self._change(tts_voice=value)
+
+    @Slot(str)
+    def setTtsLanguage(self, value: str) -> None:
+        self._change(tts_language=value)
 
     @Slot(str)
     def setDownloadRoot(self, value: str) -> None:

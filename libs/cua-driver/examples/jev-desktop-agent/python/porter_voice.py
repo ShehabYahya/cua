@@ -165,6 +165,7 @@ class HandsFreeVoiceService:
                     wav = await asyncio.to_thread(
                         self.microphone.record,
                         stop_event=self._stop,
+                        pause_event=self.runtime.tts_pause_event,
                         on_speech_start=self._on_speech_start,
                         on_level=self._on_level,
                     )

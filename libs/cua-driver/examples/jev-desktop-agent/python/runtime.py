@@ -5,6 +5,7 @@ import contextlib
 import os
 import platform
 import sys
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +44,12 @@ class PorterRuntimeConfig:
     enforce_policy: bool = False
     allow_foreground: bool = True
     visual_click_mode: str = "strict"
+    tts_enabled: bool = True
+    tts_api_base: str = "http://127.0.0.1:9393/v1"
+    tts_model: str = "qwen3-tts-1.7b-customvoice"
+    tts_voice: str = "Vivian"
+    tts_language: str = "English"
+    tts_instructions: str = ""
     telemetry: TelemetryConfig | None = None
 
     def resolved_download_root(self) -> str | None:
@@ -86,6 +93,8 @@ class PorterRuntime:
         self._openrouter: OpenRouterClient | None = None
         self._agent: AgentLoop | None = None
         self._voice_service: HandsFreeVoiceService | None = None
+        self._tts_pause = threading.Event()
+        self._speaker = None
 
         self._command_lock = asyncio.Lock()
         self._cancel_event: asyncio.Event | None = None
@@ -185,6 +194,14 @@ class PorterRuntime:
         stack = contextlib.AsyncExitStack()
         await stack.__aenter__()
         try:
+            from voice import LocalSpeaker
+            self._speaker = LocalSpeaker(
+                self.config.tts_enabled, api_base=self.config.tts_api_base,
+                model=self.config.tts_model, voice=self.config.tts_voice,
+                language=self.config.tts_language,
+                instructions=self.config.tts_instructions,
+                pause_event=self._tts_pause,
+            )
             chooser = self._chooser_factory(
                 self.config.provider,
                 model=self.config.jev_model,
@@ -366,6 +383,8 @@ class PorterRuntime:
                 raise
             else:
                 terminal_status = result.status
+                if self._speaker is not None and self.config.tts_enabled:
+                    await self._speaker.say(result.message)
                 self._emit(
                     "command_completed",
                     result.message,
@@ -403,6 +422,10 @@ class PorterRuntime:
     def hands_free_enabled(self) -> bool:
         service = self._voice_service
         return bool(service is not None and service.running)
+
+    @property
+    def tts_pause_event(self) -> threading.Event:
+        return self._tts_pause
 
     async def start_hands_free(
         self,

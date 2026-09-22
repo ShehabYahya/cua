@@ -6,6 +6,7 @@ import io
 import math
 import shutil
 import subprocess
+import tempfile
 import threading
 import wave
 from collections import deque
@@ -17,8 +18,17 @@ from openrouter_client import DEFAULT_STT_MODEL, OpenRouterClient
 
 
 class LocalSpeaker:
-    def __init__(self, enabled: bool = False) -> None:
+    def __init__(self, enabled: bool = False, *, api_base: str = "http://127.0.0.1:9393/v1",
+                 model: str = "qwen3-tts-1.7b-customvoice", voice: str = "Vivian",
+                 language: str = "English", instructions: str = "",
+                 pause_event: threading.Event | None = None) -> None:
         self.enabled = enabled
+        self.api_base = api_base.rstrip("/")
+        self.model = model
+        self.voice = voice
+        self.language = language
+        self.instructions = instructions
+        self.pause_event = pause_event
         self.binary = shutil.which("spd-say") or shutil.which("espeak-ng") or shutil.which("espeak")
 
     def show(self, text: str) -> None:
@@ -26,16 +36,44 @@ class LocalSpeaker:
 
     async def say(self, text: str) -> None:
         self.show(text)
-        if not self.enabled or not self.binary or not text.strip():
+        if not self.enabled or not text.strip():
             return
         try:
-            # Speech runs in a worker thread and is awaited, so TTS never blocks
-            # the asyncio event loop and is never left as fire-and-forget.
             await asyncio.to_thread(self._speak_sync, text)
         except Exception:
-            pass
+            if self.binary:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(self._speak_fallback, text)
 
     def _speak_sync(self, text: str) -> None:
+        if self.pause_event is not None:
+            self.pause_event.set()
+        try:
+            import httpx
+            response = httpx.post(
+                f"{self.api_base}/audio/speech",
+                json={"model": self.model, "input": text[:600], "voice": self.voice,
+                      "language": self.language, "response_format": "wav",
+                      "instructions": self.instructions},
+                timeout=360,
+            )
+            response.raise_for_status()
+            player = shutil.which("aplay") or shutil.which("pw-play")
+            if not player:
+                raise RuntimeError("no local WAV player found")
+            with tempfile.NamedTemporaryFile(suffix=".wav") as audio:
+                audio.write(response.content)
+                audio.flush()
+                command = [player, audio.name]
+                if player.endswith("aplay"):
+                    command.insert(1, "-q")
+                subprocess.run(command, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=360, check=False)
+        finally:
+            if self.pause_event is not None:
+                self.pause_event.clear()
+
+    def _speak_fallback(self, text: str) -> None:
         command = [self.binary]
         if self.binary.endswith("spd-say"):
             # Without --wait spd-say returns before speech finishes, so awaiting
