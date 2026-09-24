@@ -28,6 +28,7 @@ jobs:
     outputs:
       should_run: ${{ steps.scope.outputs.should_run }}
       versions: ${{ steps.versions.outputs.versions }}
+      has_versions: ${{ steps.versions.outputs.has_versions }}
     steps:
       - name: Decide whether installer compatibility is affected
         id: scope
@@ -74,6 +75,7 @@ jobs:
           if [[ "$(jq 'length' <<< "$VERSIONS")" -eq 0 ]]; then
             echo "No published Cua Driver release is available; skipping compatibility checks."
             echo 'versions=["skip"]' >> "$GITHUB_OUTPUT"
+            echo 'has_versions=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           while IFS= read -r version; do
@@ -83,12 +85,13 @@ jobs:
             fi
           done < <(jq -r '.[]' <<< "$VERSIONS")
           echo "versions=$VERSIONS" >> "$GITHUB_OUTPUT"
+          echo 'has_versions=true' >> "$GITHUB_OUTPUT"
           echo "Testing released versions: $(jq -r 'join(", ")' <<< "$VERSIONS")"
 
   install:
     name: "${{ matrix.os }} / v${{ matrix.version }}"
     needs: scope
-    if: needs.scope.outputs.should_run == 'true' && needs.scope.outputs.versions != '["skip"]'
+    if: needs.scope.outputs.should_run == 'true' && needs.scope.outputs.has_versions == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -169,7 +172,7 @@ jobs:
             exit 1
           fi
           if [[ "${{ needs.scope.outputs.should_run }}" == "true" &&
-                "${{ needs.scope.outputs.versions }}" != '["skip"]' &&
+                "${{ needs.scope.outputs.has_versions }}" == "true" &&
                 "${{ needs.install.result }}" != "success" ]]; then
             exit 1
           fi
