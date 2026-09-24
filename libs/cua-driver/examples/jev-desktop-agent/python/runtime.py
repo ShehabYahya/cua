@@ -118,7 +118,10 @@ class PorterRuntime:
 
     @property
     def busy(self) -> bool:
-        return self._command_lock.locked()
+        return (
+            self._active_command_id is not None
+            or self._command_lock.locked()
+        )
 
     @property
     def active_command_id(self) -> str | None:
@@ -355,10 +358,19 @@ class PorterRuntime:
         result: RunResult | None = None
         raised: BaseException | None = None
 
-        await self._command_lock.acquire()
+        # Reserve ownership before the first await. On the single runtime
+        # event loop this makes concurrent submit() calls fail immediately
+        # rather than waiting behind the command lock.
         self._active_command_id = command_id
         self._cancel_event = cancel_event
         self._cancelling = False
+        try:
+            await self._command_lock.acquire()
+        except BaseException:
+            self._active_command_id = None
+            self._cancel_event = None
+            self._cancelling = False
+            raise
         self._capture(
             "begin_command",
             command_id,
