@@ -66,6 +66,7 @@ class VoiceCaptureEngine:
         )
         self._loop: asyncio.AbstractEventLoop | None = None
         self._last_level_emit = 0.0
+        self.last_status = "idle"
 
     def _thread_emit(
         self,
@@ -116,6 +117,7 @@ class VoiceCaptureEngine:
         mode: str,
     ) -> VoiceCaptureResult | None:
         self._loop = asyncio.get_running_loop()
+        self.last_status = "capturing"
 
         def on_speech_start() -> None:
             self._thread_emit(mode, "voice_speech_started", "Listening…")
@@ -142,6 +144,7 @@ class VoiceCaptureEngine:
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            self.last_status = "error"
             self.runtime.emit_event(
                 "voice_error",
                 str(error),
@@ -149,7 +152,11 @@ class VoiceCaptureEngine:
             )
             return None
 
-        if stop_event.is_set() or not wav:
+        if stop_event.is_set():
+            self.last_status = "cancelled"
+            return None
+        if not wav:
+            self.last_status = "no_speech"
             return None
 
         self.runtime.emit_event(
@@ -172,6 +179,7 @@ class VoiceCaptureEngine:
                 language=self.config.language,
             )
         except asyncio.CancelledError:
+            self.last_status = "cancelled"
             self._capture_stt(
                 utterance_id,
                 stt_started,
@@ -180,6 +188,7 @@ class VoiceCaptureEngine:
             )
             raise
         except Exception as error:
+            self.last_status = "transcription_failed"
             self._capture_stt(
                 utterance_id,
                 stt_started,
@@ -195,6 +204,7 @@ class VoiceCaptureEngine:
             return None
 
         if stop_event.is_set():
+            self.last_status = "cancelled"
             self._capture_stt(
                 utterance_id,
                 stt_started,
@@ -211,8 +221,10 @@ class VoiceCaptureEngine:
         )
         transcript = text.strip()
         if not transcript:
+            self.last_status = "no_speech"
             return None
 
+        self.last_status = "transcribed"
         self.runtime.emit_event(
             "voice_transcript",
             transcript,
@@ -321,6 +333,8 @@ class HandsFreeVoiceService:
                 if self._stop.is_set():
                     return
                 if result is None:
+                    if self.capture.last_status == "error":
+                        return
                     continue
 
                 transcript = result.transcript
