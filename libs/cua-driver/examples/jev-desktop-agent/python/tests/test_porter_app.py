@@ -64,8 +64,13 @@ class PorterAppTest(unittest.TestCase):
         _sync_tray_actions(porter, stop, listen)
         self.assertTrue(stop.enabled)
         self.assertEqual(stop.text, "Stop current task")
+        self.assertFalse(listen.enabled)
+
+        porter.busy = False
+        _sync_tray_actions(porter, stop, listen)
         self.assertTrue(listen.enabled)
 
+        porter.busy = True
         porter.cancelling = True
         _sync_tray_actions(porter, stop, listen)
         self.assertFalse(stop.enabled)
