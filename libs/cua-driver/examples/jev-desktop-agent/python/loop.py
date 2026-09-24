@@ -100,6 +100,7 @@ class AgentLoop:
         download_root: str | None = None,
         progress: Callable[[str], None] | None = None,
         enforce_policy: bool = False,
+        visual_click_mode: str = "strict",
     ) -> None:
         self._driver = driver
         self._chooser = chooser
@@ -111,6 +112,11 @@ class AgentLoop:
         self._download_tracker = DownloadTracker(download_root)
         self._progress_callback = progress
         self._enforce_policy = enforce_policy
+        if visual_click_mode not in {"strict", "permissive"}:
+            raise ValueError(
+                "visual_click_mode must be 'strict' or 'permissive'"
+            )
+        self._visual_click_mode = visual_click_mode
         self._recent_files: tuple[str, ...] = ()
         self._recent_context: list[str] = []
         self._last_target: tuple[int, int] | None = None
@@ -400,8 +406,15 @@ class AgentLoop:
             prepared_texts=slots,
             max_candidates=self._pool_limit(observation, slots),
             allow_visual_clicks=bool(
-                getattr(self._driver, "coordinate_click_supported", False)
-                or self._driver.capture_bound_click
+                self._driver.capture_bound_click
+                or (
+                    self._visual_click_mode == "permissive"
+                    and getattr(
+                        self._driver,
+                        "coordinate_click_supported",
+                        False,
+                    )
+                )
             ),
             download_root=self._download_root,
             recent_files=self._download_tracker.validate_recent(self._recent_files),
@@ -534,7 +547,10 @@ class AgentLoop:
                 delivered += 1
                 continue
             except DriverRefusal as refusal:
-                if refusal.code == "session_ended" and delivered == 0:
+                if (
+                    refusal.code in {"session_ended", "tool_invocation_failed"}
+                    and delivered == 0
+                ):
                     return "session_revived", refusal.reason, 0
                 if refusal.recommended == "foreground" and allow_foreground:
                     if cancel_event is not None and cancel_event.is_set():
@@ -547,7 +563,8 @@ class AgentLoop:
                         continue
                     except DriverRefusal as foreground_refusal:
                         if (
-                            foreground_refusal.code == "session_ended"
+                            foreground_refusal.code
+                            in {"session_ended", "tool_invocation_failed"}
                             and delivered == 0
                         ):
                             return "session_revived", foreground_refusal.reason, 0
@@ -830,7 +847,7 @@ class AgentLoop:
                     if revivals >= 1:
                         return stop(
                             "refused",
-                            "The Driver lifecycle session ended twice in this run.",
+                            "The Cua Driver session failed twice in this run; Porter stopped retrying.",
                             history,
                         )
                     revivals += 1
@@ -1152,6 +1169,18 @@ class AgentLoop:
                 result_ref=result_ref,
             )
 
+            # Cancellation is a hard fence after an already-dispatched atomic
+            # Driver operation returns. Never revive, wait for downloads,
+            # observe, or ask Jev for another decision after this point.
+            if cancelled():
+                history.append(
+                    record(
+                        "cancelled_after_action" if delivered else "cancelled",
+                        executed=bool(delivered),
+                    )
+                )
+                return stop("cancelled", "Cancelled by the user.", history)
+
             if outcome == "session_revived":
                 if revivals >= 1:
                     history.append(record("session_ended", reason=reason))
@@ -1181,8 +1210,18 @@ class AgentLoop:
 
             if files_before or self._is_download(selected):
                 changes = await self._download_tracker.wait_for_changes(
-                    files_before, timeout=5.0
+                    files_before,
+                    timeout=5.0,
+                    stop_event=cancel_event,
                 )
+                if cancelled():
+                    history.append(
+                        record(
+                            "cancelled_after_action",
+                            executed=bool(delivered),
+                        )
+                    )
+                    return stop("cancelled", "Cancelled by the user.", history)
                 if changes:
                     names = ", ".join(f'"{s.name}"' for s in changes[:4])
                     self._recent_files = self._download_tracker.validate_recent(
@@ -1192,9 +1231,19 @@ class AgentLoop:
 
             # The resulting state is the next iteration's observation, so no
             # separate post-action observation is taken at the bottom.
+            if cancelled():
+                history.append(
+                    record("cancelled_after_action", executed=bool(delivered))
+                )
+                return stop("cancelled", "Cancelled by the user.", history)
             read = await self._read_state(
                 target=target, wanted_app=wanted_app, pending=True
             )
+            if cancelled():
+                history.append(
+                    record("cancelled_after_action", executed=bool(delivered))
+                )
+                return stop("cancelled", "Cancelled by the user.", history)
             if read == _REVIVED:
                 history.append(record("session_ended", executed=bool(delivered)))
                 if revivals >= 1:

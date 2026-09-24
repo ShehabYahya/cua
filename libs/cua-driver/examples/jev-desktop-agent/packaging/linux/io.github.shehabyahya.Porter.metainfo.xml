@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.shehabyahya.Porter</id>
+  <name>Porter</name>
+  <summary>Resident AI desktop control</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.shehabyahya">
+    <name>Shehab Yahya</name>
+  </developer>
+  <url type="homepage">https://github.com/ShehabYahya/cua</url>
+  <description>
+    <p>
+      Porter is a native resident desktop assistant built on Cua Driver and
+      Jev. It provides a full Aurora Dark control center, a compact command bar,
+      hands-free voice input, and bounded desktop automation.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.shehabyahya.Porter.desktop</launchable>
+  <provides>
+    <binary>porter</binary>
+  </provides>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.1" date="2026-09-22">
+      <description>
+        <p>
+          Porter can speak its replies through a local text-to-speech endpoint,
+          pauses the microphone while speaking, and exposes speech enable,
+          model, voice, and language controls in Voice &amp; Audio settings.
+        </p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-09-20">
+      <description>
+        <p>
+          First Porter preview: native Aurora Dark UI, resident Cua/Jev runtime,
+          hands-free voice, global shortcut, secure credentials, diagnostics,
+          guided Driver maintenance, and Debian packaging.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>

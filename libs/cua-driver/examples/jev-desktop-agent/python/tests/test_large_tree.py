@@ -13,10 +13,9 @@ from candidates import build_candidates
 from contracts import Candidate, Decision, Element, Observation
 from jev_adapter import HierarchicalChooser, _state
 from loop import AgentLoop
-from planner import PassThroughPlanner
-from test_direct_search_workflow import DirectSearchDriver, NoModelClient
-from verifier import OpenRouterVerifier, state_changed
-from writer import OpenRouterWriter, inferred_text_slots, redact_prepared_text
+from test_direct_search_workflow import DirectSearchDriver
+from verifier import state_changed
+from writer import inferred_text_slots, redact_prepared_text
 
 GOAL = (
     "Open Firefox, open a new tab, search the web for Alan Turing, "
@@ -107,7 +106,7 @@ class LargeTreeTest(unittest.TestCase):
         self.assertTrue(state_changed(before, after))
         self.assertFalse(state_changed(before, replace(before, snapshot_id="s3")))
 
-    def test_candidate_state_keeps_browser_refs_and_masks_values(self):
+    def test_candidate_state_keeps_refs_and_exposes_bounded_ordinary_field_text(self):
         observation = large_observation()
         field = Element(
             100001,
@@ -123,7 +122,16 @@ class LargeTreeTest(unittest.TestCase):
         state = _state("fill query", observation, [], candidates=[candidate])
         items = state["observation"]["elements"]
         self.assertIn(field.index, {e["index"] for e in items})
-        self.assertNotIn("private text", str(state))
+        compact_field = next(e for e in items if e["index"] == field.index)
+        self.assertEqual(compact_field["value"], "<set>")
+        observed = next(
+            item
+            for item in state["observed_field_text"]
+            if item["index"] == field.index
+        )
+        self.assertEqual(observed["value"], "private text")
+        self.assertNotIn("private text", candidate.description)
+        self.assertNotIn("private text", str(dict(candidate.arguments)))
 
     def test_browser_search_shortcut_is_not_offered_in_unrelated_apps(self):
         observation = replace(large_observation(), app="Text Editor")
@@ -149,31 +157,38 @@ class LargeTreeTest(unittest.TestCase):
 
         class StateChooser:
             async def choose(self, **kwargs):
-                state = _state(**kwargs)["observation"]
-                field = next(e for e in state["elements"] if e["index"] == 20)
-                if field.get("value") == "<set>":
-                    selected = "press-enter"
-                elif state["window"].startswith("New Tab"):
-                    selected = "type-focused-text-1"
+                state = _state(**kwargs)
+                compact = state["observation"]
+                if "Google Search" in compact["window"]:
+                    selected = "done"
                 else:
-                    selected = "hotkey-new-tab"
+                    field_text = next(
+                        (
+                            item["value"]
+                            for item in state["observed_field_text"]
+                            if item["index"] == 20
+                        ),
+                        "",
+                    )
+                    if field_text == "Alan Turing":
+                        selected = "press-enter"
+                    elif compact["window"].startswith("New Tab"):
+                        selected = "type-focused-text-1"
+                    else:
+                        selected = "hotkey-new-tab"
                 outer.assertIn(selected, {c.id for c in kwargs["candidates"]})
                 return Decision(selected, 0.9, {selected: 0.9})
 
         driver = LargeSearchDriver()
-        client = NoModelClient()
         agent = AgentLoop(
             driver,
             HierarchicalChooser(StateChooser()),
-            planner=PassThroughPlanner(),
-            verifier=OpenRouterVerifier(client),
-            writer=OpenRouterWriter(client),
             max_steps=8,
         )
         result = asyncio.run(agent.run(GOAL, act=True))
         self.assertEqual(result.status, "completed")
         self.assertEqual(driver.executed, ["hotkey-new-tab", "type-focused-text-1", "press-enter"])
-        self.assertEqual(result.steps[1].reason, "state changed")
+        self.assertEqual(result.steps[1].reason, "state changed after the action")
 
 
 if __name__ == "__main__":

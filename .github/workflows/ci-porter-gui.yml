@@ -1,0 +1,163 @@
+name: "CI: Porter native GUI"
+
+on:
+  pull_request:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/ui/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_app.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_maintenance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/single_instance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/version.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/global_shortcuts.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/resources.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_resources.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_app.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_maintenance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_single_instance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_visual_click_mode.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_runtime.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/runtime.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/events.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
+      - "libs/cua-driver/examples/jev-desktop-agent/uv.lock"
+      - ".github/workflows/ci-porter-gui.yml"
+      - ".github/workflows/release-porter.yml"
+  push:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/ui/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_app.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_maintenance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/single_instance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/version.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/global_shortcuts.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/resources.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_resources.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_app.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_maintenance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_single_instance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_visual_click_mode.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_runtime.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/runtime.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/events.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/pyproject.toml"
+      - "libs/cua-driver/examples/jev-desktop-agent/uv.lock"
+      - ".github/workflows/ci-porter-gui.yml"
+      - ".github/workflows/release-porter.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-porter-gui-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: libs/cua-driver/examples/jev-desktop-agent
+
+jobs:
+  qml-smoke:
+    name: Qt/QML shell smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.15"
+          enable-cache: true
+
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             libegl1             libgl1             libxkbcommon-x11-0             desktop-file-utils
+
+      - name: Verify Porter lockfile is current
+        run: uv lock --check
+
+      - name: Install native GUI dependencies
+        run: uv sync --locked --extra gui
+
+      - name: Compile Porter Python sources
+        run: uv run --extra gui python -m compileall -q python
+
+      - name: Run Porter native service tests
+        run: |
+          uv run --extra gui python -m unittest python/tests/test_porter_voice.py -v
+          uv run --extra gui python -m unittest python/tests/test_loop.py -v
+          uv run --extra gui python -m unittest python/tests/test_resources.py -v
+          uv run --extra gui python -m unittest python/tests/test_porter_settings.py -v
+          uv run --extra gui python -m unittest python/tests/test_porter_app.py -v
+          uv run --extra gui python -m unittest python/tests/test_porter_qt.py -v
+          uv run --extra gui python -m unittest python/tests/test_porter_maintenance.py -v
+          uv run --extra gui python -m unittest python/tests/test_single_instance.py -v
+          uv run --extra gui python -m unittest python/tests/test_visual_click_mode.py -v
+          uv run --extra gui python -m unittest python/tests/test_runtime.py -v
+
+      - name: Validate Linux desktop packaging metadata
+        run: |
+          bash -n packaging/linux/build-deb.sh
+          desktop-file-validate             packaging/linux/io.github.shehabyahya.Porter.desktop
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          ET.parse(
+              "packaging/linux/"
+              "io.github.shehabyahya.Porter.metainfo.xml"
+          )
+          PY
+
+      - name: Validate release workflow YAML
+        run: |
+          uv run --with PyYAML python - <<'PY'
+          import pathlib
+          import yaml
+
+          path = pathlib.Path(
+              "../../../../.github/workflows/release-porter.yml"
+          ).resolve()
+          payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+          assert isinstance(payload, dict)
+          assert "jobs" in payload
+          assert "release" in payload["jobs"]
+          PY
+
+      - name: Verify Porter version
+        run: |
+          VERSION="$(PYTHONPATH=python python3 -c 'from version import __version__; print(__version__)')"
+          test "$(uv run --extra gui python python/porter_app.py --version)" = "Porter $VERSION"
+
+      - name: Load Aurora Dark QML offscreen
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          OPENROUTER_API_KEY: ""
+          TYPESAFE_API_KEY: ""
+        run: uv run --extra gui python python/porter_app.py --smoke-test

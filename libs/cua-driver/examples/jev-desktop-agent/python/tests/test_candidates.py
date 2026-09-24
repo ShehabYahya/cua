@@ -247,7 +247,7 @@ class CandidateTest(unittest.TestCase):
         self.assertNotIn("/home/test/Downloads", candidate.description)
         self.assertEqual(candidate.risk, "confirm")
 
-    def test_password_field_is_never_offered_for_typing(self):
+    def test_password_field_is_filtered_when_policy_is_enabled(self):
         observation = Observation(
             "s1", 7, 9, "App", "Login",
             (Element(1, "s1:1", "entry", "Password"),),
@@ -256,8 +256,28 @@ class CandidateTest(unittest.TestCase):
             "type the password",
             observation,
             prepared_texts=(PreparedText("text-1", "secret"),),
+            enforce_policy=True,
         )
-        self.assertFalse(any(c.id.startswith("type-") for c in candidates))
+        self.assertFalse(
+            any(
+                c.id.startswith("type-")
+                or c.id.startswith("bundle-fill-submit-")
+                for c in candidates
+            )
+        )
+
+    def test_password_field_policy_is_opt_in(self):
+        observation = Observation(
+            "s1", 7, 9, "App", "Login",
+            (Element(1, "s1:1", "entry", "Password"),),
+        )
+        candidates = build_candidates(
+            "type the password",
+            observation,
+            prepared_texts=(PreparedText("text-1", "secret"),),
+            enforce_policy=False,
+        )
+        self.assertTrue(any(c.id.startswith("type-") for c in candidates))
 
 
 if __name__ == "__main__":

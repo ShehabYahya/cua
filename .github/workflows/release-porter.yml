@@ -1,0 +1,185 @@
+name: "Release: Porter"
+
+on:
+  push:
+    tags:
+      - "porter-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Porter version from python/version.py"
+        required: true
+      prerelease:
+        description: "Publish as a prerelease"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: libs/cua-driver/examples/jev-desktop-agent
+
+jobs:
+  release:
+    name: Build and publish Porter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.15"
+          enable-cache: true
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#porter-v}"
+            TAG="$GITHUB_REF_NAME"
+          else
+            if [[ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+              echo "Manual releases must run from $DEFAULT_BRANCH, not $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+            VERSION="${{ inputs.version }}"
+            TAG="porter-v$VERSION"
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid Porter release version: $VERSION" >&2
+            exit 1
+          fi
+
+          APP_VERSION="$(
+            python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "python")
+          from version import __version__
+          print(__version__)
+          PY
+          )"
+
+          if [[ "$VERSION" != "$APP_VERSION" ]]; then
+            echo "Release version $VERSION does not match Porter $APP_VERSION" >&2
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF_TYPE" != "tag" ]] && \
+            git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Porter tag $TAG already exists; refusing to publish over it." >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install build and runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            appstream \
+            build-essential \
+            ccache \
+            desktop-file-utils \
+            libegl1 \
+            libgl1 \
+            libportaudio2 \
+            libxkbcommon-x11-0 \
+            lintian \
+            patchelf
+
+      - name: Build Debian package
+        run: |
+          bash packaging/linux/build-deb.sh "${{ steps.version.outputs.version }}"
+
+      - name: Create checksum
+        run: |
+          cd dist
+          sha256sum porter_*.deb > porter_SHA256SUMS.txt
+
+      - name: Validate release package metadata
+        run: |
+          DEB="$(find dist -maxdepth 1 -name 'porter_*.deb' -print -quit)"
+          test -n "$DEB"
+          lintian --fail-on error "$DEB"
+          desktop-file-validate \
+            packaging/linux/io.github.shehabyahya.Porter.desktop
+          appstreamcli validate --no-net \
+            packaging/linux/io.github.shehabyahya.Porter.metainfo.xml
+
+      - name: Verify packaged executable
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          OPENROUTER_API_KEY: ""
+          TYPESAFE_API_KEY: ""
+        run: |
+          rm -rf /tmp/porter-release-check
+          mkdir -p /tmp/porter-release-check
+          DEB="$(find dist -maxdepth 1 -name 'porter_*.deb' -print -quit)"
+          test -n "$DEB"
+          dpkg-deb -x "$DEB" /tmp/porter-release-check
+          /tmp/porter-release-check/usr/libexec/porter/porter --version | grep -q "^Porter ${{ steps.version.outputs.version }}$"
+          /tmp/porter-release-check/usr/libexec/porter/porter --smoke-test
+
+      - name: Upload release-build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: porter-${{ steps.version.outputs.version }}
+          path: |
+            libs/cua-driver/examples/jev-desktop-agent/dist/*.deb
+            libs/cua-driver/examples/jev-desktop-agent/dist/porter_SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
+        shell: bash
+        run: |
+          NOTES="libs/cua-driver/examples/jev-desktop-agent/packaging/RELEASE_NOTES_${VERSION}.md"
+          DEB="$(find libs/cua-driver/examples/jev-desktop-agent/dist -maxdepth 1 -name 'porter_*.deb' -print -quit)"
+          SUMS="libs/cua-driver/examples/jev-desktop-agent/dist/porter_SHA256SUMS.txt"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists" >&2
+            exit 1
+          fi
+
+          ARGS=(
+            "$TAG"
+            "$DEB"
+            "$SUMS"
+            --target "$GITHUB_SHA"
+            --title "Porter v$VERSION"
+          )
+          if [[ -f "$NOTES" ]]; then
+            echo "Using curated release notes: $NOTES"
+            ARGS+=(--notes-file "$NOTES")
+          else
+            echo "No curated notes found at $NOTES; generating release notes from GitHub."
+            ARGS+=(--generate-notes)
+          fi
+          if [[ "$PRERELEASE" == "true" ]]; then
+            ARGS+=(--prerelease)
+          fi
+          gh release create "${ARGS[@]}"

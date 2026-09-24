@@ -1,0 +1,12 @@
+# Porter is distributed as a self-contained Nuitka one-file application. These
+# libraries are intentionally embedded so the frozen Qt application is portable
+# across supported Ubuntu installations.
+porter-desktop: embedded-library bzip2 [usr/libexec/porter/porter]
+porter-desktop: embedded-library expat [usr/libexec/porter/porter]
+porter-desktop: embedded-library freetype [usr/libexec/porter/porter]
+porter-desktop: embedded-library lcms2 [usr/libexec/porter/porter]
+porter-desktop: embedded-library libjpeg [usr/libexec/porter/porter]
+porter-desktop: embedded-library libjsoncpp [usr/libexec/porter/porter]
+porter-desktop: embedded-library openjpeg [usr/libexec/porter/porter]
+porter-desktop: embedded-library srtp [usr/libexec/porter/porter]
+porter-desktop: embedded-library tiff [usr/libexec/porter/porter]

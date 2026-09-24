@@ -43,7 +43,7 @@ class PerceptionTest(unittest.TestCase):
         self.addCleanup(lambda: Path(handle.name).unlink(missing_ok=True))
         return handle.name
 
-    def test_skips_remote_vision_when_semantics_already_ground_goal(self):
+    def test_explicit_vision_enrichment_uses_the_supplied_screenshot(self):
         client = FakeVisionClient()
         observation = Observation(
             "s1",
@@ -55,6 +55,25 @@ class PerceptionTest(unittest.TestCase):
             screenshot_path=self._image(),
             screenshot_width=400,
             screenshot_height=300,
+        )
+        result = asyncio.run(
+            OpenRouterVisionPerceiver(client).enrich("click Save", observation)
+        )
+        # Lazy invocation is owned by AgentLoop. Once the perceiver is explicitly
+        # invoked with a real screenshot, it performs one bounded request rather
+        # than trying to infer that lexical semantic overlap is sufficient.
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(result.visual_regions[0].label, "Custom Action")
+
+    def test_no_screenshot_never_calls_remote_vision(self):
+        client = FakeVisionClient()
+        observation = Observation(
+            "s1",
+            7,
+            9,
+            "Demo",
+            "Demo",
+            (Element(1, "s1:1", "button", "Save"),),
         )
         result = asyncio.run(
             OpenRouterVisionPerceiver(client).enrich("click Save", observation)

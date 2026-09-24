@@ -1,0 +1,97 @@
+name: "CI: Porter UI screenshots"
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/ui/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/capture_ui.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_maintenance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/version.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
+      - ".github/workflows/capture-porter-ui.yml"
+  push:
+    paths:
+      - "libs/cua-driver/examples/jev-desktop-agent/ui/**"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/capture_ui.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_qt.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/porter_maintenance.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/version.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/assets/**"
+      - ".github/workflows/capture-porter-ui.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: porter-ui-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: libs/cua-driver/examples/jev-desktop-agent
+
+jobs:
+  capture:
+    name: Capture actual Qt/QML UI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.15"
+          enable-cache: true
+
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             libegl1             libgl1             libxkbcommon-x11-0
+
+      - name: Install Porter GUI dependencies
+        run: uv sync --extra gui
+
+      - name: Capture screenshots from the real QML
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          OPENROUTER_API_KEY: ""
+          TYPESAFE_API_KEY: ""
+        run: |
+          rm -rf screenshots
+          uv run --extra gui python python/capture_ui.py screenshots
+          uv run --extra gui python python/capture_ui.py \
+            screenshots/minimum-window --width 980 --height 640
+          test -f screenshots/01-home.png
+          test -f screenshots/09-about-updates.png
+          test -f screenshots/10-compact-bar.png
+          test -f screenshots/11-first-run-onboarding.png
+          test -f screenshots/12-compact-listening.png
+          test -f screenshots/13-compact-working.png
+          test -f screenshots/14-compact-error.png
+          test -f screenshots/15-compact-cancelling.png
+          test -f screenshots/16-compact-one-shot-listening.png
+          test -f screenshots/17-home-working-stop.png
+          test -f screenshots/18-home-one-shot-listening.png
+          test -f screenshots/19-voice-one-shot.png
+          test -f screenshots/minimum-window/17-home-working-stop.png
+          test -f screenshots/minimum-window/18-home-one-shot-listening.png
+          test -f screenshots/minimum-window/01-home.png
+          test -f screenshots/minimum-window/09-about-updates.png
+
+      - name: Upload UI screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: porter-ui-screenshots-${{ github.sha }}
+          path: libs/cua-driver/examples/jev-desktop-agent/screenshots/**/*.png
+          if-no-files-found: error
+          retention-days: 14

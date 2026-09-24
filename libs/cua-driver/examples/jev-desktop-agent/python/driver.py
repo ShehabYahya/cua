@@ -137,6 +137,10 @@ def _visual_regions(
     return tuple(out)
 
 
+_SESSION_START_TOOLS = ("call_start_session", "start_session")
+_SESSION_END_TOOLS = ("call_end_session", "end_session")
+
+
 class CuaMcpDriver:
     def __init__(self, binary: str | None = None) -> None:
         self._binary = binary or os.getenv("CUA_DRIVER_BIN", "cua-driver")
@@ -185,8 +189,7 @@ class CuaMcpDriver:
             self.capture_bound_click = self.has_property("click", "capture_id")
             self.coordinate_click_supported = self._supports_coordinate_click()
             self._browser_route_unavailable.clear()
-            if self.has_tool("start_session"):
-                await self._call("start_session", {})
+            await self._start_driver_session(require=True)
             return self
         except BaseException:
             await self._stack.aclose()
@@ -196,9 +199,9 @@ class CuaMcpDriver:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         stack = self._stack
-        if self._session is not None and self.has_tool("end_session"):
+        if self._session is not None:
             try:
-                await self._call("end_session", {})
+                await self._end_driver_session()
             except Exception:
                 pass
         self._browser_route_unavailable.clear()
@@ -207,10 +210,37 @@ class CuaMcpDriver:
         if stack is not None:
             await stack.__aexit__(exc_type, exc, tb)
 
+    def _session_tool(
+        self,
+        names: tuple[str, ...],
+    ) -> str | None:
+        return next(
+            (name for name in names if self.has_tool(name)),
+            None,
+        )
+
+    async def _start_driver_session(
+        self,
+        *,
+        require: bool = False,
+    ) -> None:
+        name = self._session_tool(_SESSION_START_TOOLS)
+        if name is None:
+            if require:
+                raise RuntimeError(
+                    "Cua Driver does not advertise call_start_session "
+                    "or start_session; update Cua Driver before using Porter"
+                )
+            return
+        await self._call(name, {})
+
+    async def _end_driver_session(self) -> None:
+        name = self._session_tool(_SESSION_END_TOOLS)
+        if name is not None:
+            await self._call(name, {})
+
     async def revive_session(self) -> None:
-        if not self.has_tool("start_session"):
-            raise RuntimeError("Cua Driver does not advertise start_session")
-        await self._call("start_session", {})
+        await self._start_driver_session(require=True)
         self._browser_route_unavailable.clear()
 
     def _supports_coordinate_click(self) -> bool:
@@ -336,7 +366,17 @@ class CuaMcpDriver:
                     ),
                 )
         if result.isError:
-            raise RuntimeError(f"{name} failed: {result.content}")
+            reason = _result_text(result) or str(result.content)
+            if "tool_invocation_failed" in reason.casefold():
+                raise DriverRefusal(
+                    name,
+                    (
+                        "Cua Driver could not invoke the tool. Porter will "
+                        "restart the Driver session and retry."
+                    ),
+                    code="tool_invocation_failed",
+                )
+            raise RuntimeError(f"{name} failed: {reason}")
         if not isinstance(data, dict):
             raise RuntimeError(f"{name} returned no structured result")
 

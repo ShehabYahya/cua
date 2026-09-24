@@ -1,0 +1,16 @@
+porter-desktop (0.1.1) unstable; urgency=medium
+
+  * Speak Porter's replies through a local OpenAI-compatible text-to-speech
+    endpoint, falling back to spd-say or espeak-ng when it is unavailable.
+  * Pause hands-free microphone capture while Porter is speaking so replies
+    are not transcribed back as commands.
+  * Add text-to-speech enable, model, voice, and language controls to the
+    Voice & Audio page.
+
+ -- Shehab Yahya <266881246+ShehabYahya@users.noreply.github.com>  Tue, 22 Sep 2026 19:10:00 +0300
+
+porter-desktop (0.1.0) unstable; urgency=medium
+
+  * Initial Porter preview release.
+
+ -- Shehab Yahya <266881246+ShehabYahya@users.noreply.github.com>  Sun, 20 Sep 2026 00:00:00 +0000

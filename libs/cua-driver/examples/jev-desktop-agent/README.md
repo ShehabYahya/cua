@@ -107,10 +107,10 @@ resulting state read == next iteration's observation
   menu/list/radio/check controls, and action-advertising widgets.
 - Optional Cua `parse_visual_regions` integration; OpenRouter vision is a lazy
   fallback for inaccessible/custom-drawn controls.
-- Canonical screenshot coordinates: when the advertised Driver supports them,
-  visual clicks use region-center pixels directly without requiring an optional
-  `capture_id`, and attach `capture_id` when Driver provides one. No handcrafted
-  OS scale conversion.
+- Canonical screenshot coordinates with a configurable binding mode. Native
+  Porter defaults to **Strict**, which requires capture-bound visual clicks.
+  **Permissive** additionally allows Driver-supported canonical coordinates
+  without a capture binding. No handcrafted OS scale conversion is used.
 - Dynamic semantic actions, prepared-text typing, focused-window typing fallback,
   common hotkeys (including F2 rename), double/right click where requested,
   scrolling, visual actions, `done`, `reobserve`, and `abstain`.
@@ -223,11 +223,15 @@ or the WinRects helper. Normal startup does not run this health probe.
 
 ## Verification status
 
-This redesign was checked with **syntax/import checks only** (`py_compile` on the
-changed modules). The unit test suite was **not run** for this redesign, and no
-measured latency, reliability, or live-desktop proof is claimed. The existing
-legacy tests were written against earlier behavior and may need updates before
-they pass.
+Porter has a dedicated native CI gate that compiles the Python sources, runs
+credential-free runtime/voice/settings/visual-mode unit tests, installs the Qt
+runtime dependencies, and loads both QML windows offscreen. That gate is kept
+separate from the older harness suite.
+
+The broader legacy harness suite still contains planner/verifier-era assertions
+that predate the current direct Jev architecture, so it is not yet a clean
+release gate. No measured live-desktop latency or reliability claim is made
+from CI alone.
 
 The legacy unit suite is credential-free and does not operate the desktop:
 
@@ -282,6 +286,167 @@ a different already-existing approved directory with:
 ```bash
 --download-root /absolute/path/to/downloads
 ```
+
+## Porter native GUI (Aurora Dark)
+
+The first native application shell is available through PySide6 + Qt Quick/QML.
+It does **not** run a local web server and does not embed HTML.
+
+Install the GUI extra:
+
+```bash
+uv sync --extra app
+```
+
+Launch Porter:
+
+```bash
+uv run --extra app python python/porter_app.py
+```
+
+The native shell currently provides:
+
+- an Aurora Dark main window wired to the real resident `PorterRuntime`;
+- a separate frameless compact command bar that is **not** forced always-on-top;
+- a Porter circular status ring;
+- live backend progress and command state;
+- direct text command submission and cancellation;
+- hide-on-close behavior for the main/compact windows;
+- a system tray/status icon when the desktop exposes one;
+- a resident backend that survives window hiding and owns Cua/Jev/OpenRouter
+  exactly once;
+- single-instance activation: launching Porter again restores the existing
+  resident process instead of starting a second Driver/model/microphone stack;
+- hands-free microphone listening enabled by default;
+- local VAD with short speech pre-roll so fast speech is not clipped;
+- automatic trailing-silence endpointing (0.55 s by default);
+- STT submission without pressing a microphone button or Enter;
+- spoken "stop"/"cancel"/"never mind" cancellation while Porter is working;
+- live listening, microphone level, transcription and command state in QML;
+- persistent non-secret settings through `QSettings`;
+- OpenRouter and TypeSafe API keys through the OS credential/keyring service,
+  never the QSettings file;
+- real Models & Providers, Computer Control, and Voice & Audio settings pages;
+- configurable Strict/Permissive visual click binding;
+- optional consequential-action confirmation and foreground escalation;
+- persistent download-root and voice/model defaults;
+- XDG desktop-session autostart ("Start Porter when I sign in");
+- live runtime reconfiguration: Apply restarts the backend stack inside the
+  resident Porter process without closing the native application;
+- a Wayland-safe global quick-bar shortcut through the XDG GlobalShortcuts
+  portal, with `Ctrl+Alt+Space` as the preferred default trigger;
+- a reverse-DNS desktop identity (`io.github.shehabyahya.Porter`) so modern
+  portal implementations can identify the host application;
+- real Shortcuts, Personalization, and Appearance pages;
+- Aurora Dark accent, compact-bar idle/hover opacity, and animation preferences;
+- a personalized native greeting that is kept out of Jev's control prompt;
+- Linux desktop launcher/AppStream metadata and a reproducible Nuitka + dpkg
+  build script for an installable `.deb`;
+- first-run onboarding for provider credentials, hands-free voice, login
+  startup, and Cua desktop-control readiness;
+- an Advanced & Diagnostics page backed by the already-running Driver, with
+  health warnings, capability flags, window/app counts, and bounded step /
+  candidate controls;
+- an About & Updates page with Porter version/update checks plus Cua Driver
+  refresh, doctor, update, and guided official installation controls;
+- one canonical Porter version source (`python/version.py`) used by the
+  application and checked by the Debian build;
+- a release workflow for `porter-v*` tags/manual releases that builds the
+  Debian package, smoke-tests the packaged executable, publishes a SHA-256
+  checksum, and creates the GitHub release.
+
+Hands-free listening requires `OPENROUTER_API_KEY` for transcription. Silence is
+processed locally; only detected utterances are sent to STT. Start muted with
+`--no-hands-free`, or toggle listening from the Porter tray menu or Voice &
+Audio page.
+
+The global shortcut uses the desktop portal rather than X11 key grabs. On
+supported desktops the first registration may open the system shortcut
+configuration dialog. If the portal is unavailable, Porter continues running
+and reports the shortcut status in the Shortcuts page.
+
+### Build an installable Debian package
+
+On an Ubuntu/Debian build machine:
+
+```bash
+cd ~/cua/libs/cua-driver/examples/jev-desktop-agent
+bash packaging/linux/build-deb.sh 0.1.1
+```
+
+The build uses the committed `uv.lock` with `uv sync --locked`, then uses
+Nuitka's PySide6 plugin to bundle the native Python/Qt app and its QML/assets.
+It stages the desktop file, Porter ring icon, AppStream metadata, Porter's MIT
+license, and generated notices for bundled third-party dependencies into:
+
+```text
+dist/porter_0.1.1_<arch>.deb
+```
+
+Install the resulting package with:
+
+```bash
+sudo apt install ./dist/porter_0.1.1_amd64.deb
+```
+
+The installed launcher is `/usr/bin/porter`, backed by the private executable
+in `/usr/libexec/porter/porter`. Cua Driver is deliberately not vendored into Porter.
+If it is missing, first-run setup and About & Updates can open the official Cua
+installation guide or, after an explicit confirmation, run Cua's official Linux
+installer. Existing installations can run `cua-driver doctor` or
+`cua-driver update --apply` directly from the Porter UI.
+
+Package CI validates the desktop and AppStream metadata, runs Lintian, and
+exercises installation, same-version upgrade/reinstallation, and removal on a
+clean Ubuntu runner before the package is accepted.
+
+### Porter v0.1.1 release path
+
+The release identity is `porter-v0.1.1`. Release notes live in
+`packaging/RELEASE_NOTES_0.1.1.md`.
+
+The `Release: Porter` GitHub Actions workflow can be run manually from the
+default branch or automatically from a matching `porter-v*` tag. It verifies
+that the requested release version matches `python/version.py`, builds and
+smoke-tests the real package, creates `porter_SHA256SUMS.txt`, and publishes
+both files to the GitHub release. Curated notes in
+`packaging/RELEASE_NOTES_<version>.md` are used when present; otherwise GitHub
+generates the release notes.
+
+When a Porter-related pull request is merged, `CD: Auto Release on Merge`
+reads its changed-file list and labels, updates only `python/version.py` in a
+release commit, creates the matching immutable `porter-v*` tag, and dispatches
+the publisher against that tag. `no-release` skips the automatic release;
+`bump:major` and `bump:minor` select those version bumps, with patch as the
+default. The Porter path uses this repository's Actions token and does not
+depend on upstream release-owner labels or App credentials.
+
+Porter's About & Updates page checks GitHub releases on demand and only considers
+tags with the `porter-v` prefix, so unrelated Cua repository releases do not
+appear as Porter updates.
+
+For a headless QML load check:
+
+```bash
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+  uv run --extra gui python python/porter_app.py --smoke-test
+```
+
+The GUI architecture is:
+
+```text
+MainWindow.qml ──┐
+                 ├── PorterViewModel ── PorterRuntimeThread
+CompactBar.qml ──┘                         │
+                                           └── asyncio
+                                               ├── Cua Driver
+                                               ├── Jev
+                                               ├── OpenRouter
+                                               └── AgentLoop
+```
+
+Qt stays on the main thread. The existing asynchronous backend owns one
+dedicated worker-thread event loop for the application lifetime.
 
 ## Voice mode
 
