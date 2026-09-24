@@ -137,8 +137,35 @@ jobs:
           # Ensure HuggingFace uses consistent cache location
           HF_HOME: ~/.cache/huggingface
 
+      - name: Check model credentials
+        id: credentials
+        shell: bash
+        env:
+          MODEL: ${{ matrix.model }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CUA_API_KEY: ${{ secrets.CUA_API_KEY }}
+        run: |
+          case "$MODEL" in
+            cua/*) required_key="$CUA_API_KEY" ;;
+            omniparser+anthropic/*|anthropic/*) required_key="$ANTHROPIC_API_KEY" ;;
+            openai/*) required_key="$OPENAI_API_KEY" ;;
+            openrouter/*) required_key="$OPENROUTER_API_KEY" ;;
+            gemini-*) required_key="$GOOGLE_API_KEY" ;;
+            *) required_key="" ;;
+          esac
+          if [[ -n "$required_key" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping $MODEL because its required API key is not configured."
+          fi
+
       - name: Test model with agent loop
         id: test_model
+        if: steps.credentials.outputs.available == 'true'
         timeout-minutes: 20
         continue-on-error: true
         run: |
@@ -176,7 +203,11 @@ jobs:
           fi
 
           # Determine status icon based on test step outcome
-          if [ "${{ steps.test_model.outcome }}" == "success" ]; then
+          if [ "${{ steps.credentials.outputs.available }}" != "true" ]; then
+            STATUS_ICON="⏭️"
+            STATUS_TEXT="SKIPPED (API key not configured)"
+            SLACK_COLOR="#ffa500"
+          elif [ "${{ steps.test_model.outcome }}" == "success" ]; then
             STATUS_ICON="✅"
             STATUS_TEXT="PASSED"
             SLACK_COLOR="#36a64f"
@@ -206,7 +237,9 @@ jobs:
           SAFE_MODEL_NAME=$(echo "$MODEL_NAME" | sed 's/[^a-zA-Z0-9]/_/g')
 
           # Determine pass status
-          if [ "${{ steps.test_model.outcome }}" == "success" ]; then
+          if [ "${{ steps.credentials.outputs.available }}" != "true" ]; then
+            PASSED_VAL="null"
+          elif [ "${{ steps.test_model.outcome }}" == "success" ]; then
             PASSED_VAL="true"
           else
             PASSED_VAL="false"
@@ -287,6 +320,7 @@ jobs:
           # Aggregate all results
           PASSED_COUNT=0
           FAILED_COUNT=0
+          SKIPPED_COUNT=0
           TOTAL_DURATION=0
           SUMMARY_MESSAGE="*🚀 Model Summaries*\n\n"
 
@@ -330,21 +364,23 @@ jobs:
               
               if [ "$PASSED" = "true" ]; then
                 PASSED_COUNT=$((PASSED_COUNT + 1))
-              else
+              elif [ "$PASSED" = "false" ]; then
                 FAILED_COUNT=$((FAILED_COUNT + 1))
+              else
+                SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               fi
               TOTAL_DURATION=$((TOTAL_DURATION + DURATION_SEC))
             fi
           done < /tmp/json_files.txt
 
           # Check if we found any results
-          TOTAL_COUNT=$((PASSED_COUNT + FAILED_COUNT))
+          TOTAL_COUNT=$((PASSED_COUNT + FAILED_COUNT + SKIPPED_COUNT))
           if [ $TOTAL_COUNT -eq 0 ]; then
             SUMMARY_MESSAGE="${SUMMARY_MESSAGE}⚠️ No test results found (workflow may have been canceled)\n"
             SLACK_COLOR="#ffa500"
           else
             # Add summary stats
-            SUMMARY_MESSAGE="${SUMMARY_MESSAGE}\n*Results:* ${PASSED_COUNT} passed, ${FAILED_COUNT} failed out of ${TOTAL_COUNT} models\n"
+            SUMMARY_MESSAGE="${SUMMARY_MESSAGE}\n*Results:* ${PASSED_COUNT} passed, ${FAILED_COUNT} failed, ${SKIPPED_COUNT} skipped out of ${TOTAL_COUNT} models\n"
             
             # Calculate total duration
             TOTAL_MIN=$((TOTAL_DURATION / 60))
@@ -357,9 +393,9 @@ jobs:
             SUMMARY_MESSAGE="${SUMMARY_MESSAGE}*Total Duration:* ${TOTAL_DURATION_STR}\n"
             
             # Determine color based on results
-            if [ $FAILED_COUNT -eq 0 ]; then
+            if [ $FAILED_COUNT -eq 0 ] && [ $SKIPPED_COUNT -eq 0 ]; then
               SLACK_COLOR="#36a64f"
-            elif [ $PASSED_COUNT -eq 0 ]; then
+            elif [ $FAILED_COUNT -gt 0 ] && [ $PASSED_COUNT -eq 0 ]; then
               SLACK_COLOR="#dc3545"
             else
               SLACK_COLOR="#ffa500"
