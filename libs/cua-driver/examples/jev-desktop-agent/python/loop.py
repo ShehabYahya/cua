@@ -1169,6 +1169,18 @@ class AgentLoop:
                 result_ref=result_ref,
             )
 
+            # Cancellation is a hard fence after an already-dispatched atomic
+            # Driver operation returns. Never revive, wait for downloads,
+            # observe, or ask Jev for another decision after this point.
+            if cancelled():
+                history.append(
+                    record(
+                        "cancelled_after_action" if delivered else "cancelled",
+                        executed=bool(delivered),
+                    )
+                )
+                return stop("cancelled", "Cancelled by the user.", history)
+
             if outcome == "session_revived":
                 if revivals >= 1:
                     history.append(record("session_ended", reason=reason))
@@ -1198,8 +1210,18 @@ class AgentLoop:
 
             if files_before or self._is_download(selected):
                 changes = await self._download_tracker.wait_for_changes(
-                    files_before, timeout=5.0
+                    files_before,
+                    timeout=5.0,
+                    stop_event=cancel_event,
                 )
+                if cancelled():
+                    history.append(
+                        record(
+                            "cancelled_after_action",
+                            executed=bool(delivered),
+                        )
+                    )
+                    return stop("cancelled", "Cancelled by the user.", history)
                 if changes:
                     names = ", ".join(f'"{s.name}"' for s in changes[:4])
                     self._recent_files = self._download_tracker.validate_recent(
@@ -1209,9 +1231,19 @@ class AgentLoop:
 
             # The resulting state is the next iteration's observation, so no
             # separate post-action observation is taken at the bottom.
+            if cancelled():
+                history.append(
+                    record("cancelled_after_action", executed=bool(delivered))
+                )
+                return stop("cancelled", "Cancelled by the user.", history)
             read = await self._read_state(
                 target=target, wanted_app=wanted_app, pending=True
             )
+            if cancelled():
+                history.append(
+                    record("cancelled_after_action", executed=bool(delivered))
+                )
+                return stop("cancelled", "Cancelled by the user.", history)
             if read == _REVIVED:
                 history.append(record("session_ended", executed=bool(delivered)))
                 if revivals >= 1:
