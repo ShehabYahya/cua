@@ -15,6 +15,10 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/global_shortcuts.py"
       - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
       - "libs/cua-driver/examples/jev-desktop-agent/python/voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/resources.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_resources.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_app.py"
@@ -43,6 +47,10 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/global_shortcuts.py"
       - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
       - "libs/cua-driver/examples/jev-desktop-agent/python/voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/resources.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_resources.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_app.py"
@@ -104,6 +112,8 @@ jobs:
       - name: Run Porter native service tests
         run: |
           uv run --extra gui python -m unittest python/tests/test_porter_voice.py -v
+          uv run --extra gui python -m unittest python/tests/test_loop.py -v
+          uv run --extra gui python -m unittest python/tests/test_resources.py -v
           uv run --extra gui python -m unittest python/tests/test_porter_settings.py -v
           uv run --extra gui python -m unittest python/tests/test_porter_app.py -v
           uv run --extra gui python -m unittest python/tests/test_porter_qt.py -v
