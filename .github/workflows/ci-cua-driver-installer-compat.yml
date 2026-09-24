@@ -72,8 +72,9 @@ jobs:
           fi
 
           if [[ "$(jq 'length' <<< "$VERSIONS")" -eq 0 ]]; then
-            echo "No published Cua Driver release was found" >&2
-            exit 1
+            echo "No published Cua Driver release is available; skipping compatibility checks."
+            echo 'versions=[]' >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           while IFS= read -r version; do
             if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -168,6 +169,7 @@ jobs:
             exit 1
           fi
           if [[ "${{ needs.scope.outputs.should_run }}" == "true" &&
+                "${{ needs.scope.outputs.versions }}" != "[]" &&
                 "${{ needs.install.result }}" != "success" ]]; then
             exit 1
           fi
