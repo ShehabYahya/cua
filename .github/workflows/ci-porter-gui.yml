@@ -15,8 +15,14 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/global_shortcuts.py"
       - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
       - "libs/cua-driver/examples/jev-desktop-agent/python/voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/resources.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_resources.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_app.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_qt.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_maintenance.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_single_instance.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_visual_click_mode.py"
@@ -41,8 +47,14 @@ on:
       - "libs/cua-driver/examples/jev-desktop-agent/python/global_shortcuts.py"
       - "libs/cua-driver/examples/jev-desktop-agent/packaging/linux/**"
       - "libs/cua-driver/examples/jev-desktop-agent/python/voice.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/resources.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_loop.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_resources.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_voice.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_settings.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_app.py"
+      - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_qt.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_porter_maintenance.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_single_instance.py"
       - "libs/cua-driver/examples/jev-desktop-agent/python/tests/test_visual_click_mode.py"
@@ -100,7 +112,11 @@ jobs:
       - name: Run Porter native service tests
         run: |
           uv run --extra gui python -m unittest python/tests/test_porter_voice.py -v
+          uv run --extra gui python -m unittest python/tests/test_loop.py -v
+          uv run --extra gui python -m unittest python/tests/test_resources.py -v
           uv run --extra gui python -m unittest python/tests/test_porter_settings.py -v
+          uv run --extra gui python -m unittest python/tests/test_porter_app.py -v
+          uv run --extra gui python -m unittest python/tests/test_porter_qt.py -v
           uv run --extra gui python -m unittest python/tests/test_porter_maintenance.py -v
           uv run --extra gui python -m unittest python/tests/test_single_instance.py -v
           uv run --extra gui python -m unittest python/tests/test_visual_click_mode.py -v
@@ -135,7 +151,8 @@ jobs:
 
       - name: Verify Porter version
         run: |
-          test "$(uv run --extra gui python python/porter_app.py --version)" = "Porter 0.1.0"
+          VERSION="$(PYTHONPATH=python python3 -c 'from version import __version__; print(__version__)')"
+          test "$(uv run --extra gui python python/porter_app.py --version)" = "Porter $VERSION"
 
       - name: Load Aurora Dark QML offscreen
         env:

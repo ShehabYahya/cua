@@ -74,6 +74,21 @@ jobs:
             "repos/${{ github.repository }}/releases?per_page=100" \
             | jq 'add' > "$RUNNER_TEMP/releases.json"
 
+      - name: Fetch upstream stable baseline tag
+        env:
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          set -euo pipefail
+          readarray -t component_release < <(jq -r --arg component "$COMPONENT" \
+            '.components[$component] | .stableTagPrefix, .versionAuthorityFile' \
+            .github/releases/components.json)
+          stable_tag="${component_release[0]}$(tr -d '[:space:]' < "${component_release[1]}")"
+          if ! git rev-parse --verify --quiet "refs/tags/$stable_tag" >/dev/null; then
+            git fetch --no-tags https://github.com/trycua/cua.git \
+              "refs/tags/$stable_tag:refs/tags/$stable_tag"
+          fi
+          git rev-parse --verify "refs/tags/$stable_tag^{commit}" >/dev/null
+
       - name: Plan immutable nightly
         id: plan
         env:

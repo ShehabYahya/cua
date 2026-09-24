@@ -60,5 +60,21 @@ class ResourceTest(unittest.TestCase):
             self.assertEqual(valid, (str(inside.resolve()),))
 
 
+    def test_wait_for_changes_can_be_cancelled(self):
+        import asyncio
+
+        tracker = DownloadTracker(None)
+        stop = __import__("threading").Event()
+        stop.set()
+
+        async def scenario():
+            return await tracker.wait_for_changes(
+                {},
+                timeout=5.0,
+                stop_event=stop,
+            )
+
+        self.assertEqual(asyncio.run(scenario()), ())
+
 if __name__ == "__main__":
     unittest.main()

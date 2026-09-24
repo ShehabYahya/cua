@@ -11,6 +11,16 @@ Rectangle {
     border.width: 1
     border.color: Qt.rgba(accent.r, accent.g, accent.b, 0.16)
 
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.leftMargin: 18
+        anchors.rightMargin: 18
+        height: 1
+        color: Qt.rgba(0.72, 0.87, 1.0, 0.08)
+    }
+
     Behavior on color {
         enabled: root.animationsEnabled
         ColorAnimation { duration: 160 }

@@ -17,7 +17,7 @@ from PySide6.QtCore import (
 from events import RuntimeEvent
 from global_shortcuts import GlobalShortcutConfig, GlobalShortcutPortal
 from porter_voice import HandsFreeVoiceConfig
-from runtime import PorterRuntime, PorterRuntimeConfig
+from runtime import PorterBusyError, PorterRuntime, PorterRuntimeConfig
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,7 @@ class PorterRuntimeThread(QThread):
     runtimeFailed = Signal(str)
     commandFinished = Signal(str, str)
     commandFailed = Signal(str)
+    commandRejected = Signal(str)
     reconfigured = Signal()
     reconfigureFailed = Signal(str)
     shortcutActivated = Signal()
@@ -61,6 +62,7 @@ class PorterRuntimeThread(QThread):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runtime: PorterRuntime | None = None
         self._shutdown_requested = False
+        self._terminal_event_serial = 0
 
     def run(self) -> None:
         loop = asyncio.new_event_loop()
@@ -141,6 +143,8 @@ class PorterRuntimeThread(QThread):
         return self._shortcut_config
 
     def _forward_event(self, event: RuntimeEvent) -> None:
+        if event.kind in {"command_completed", "command_failed"}:
+            self._terminal_event_serial += 1
         self.eventReceived.emit(event)
 
     def _schedule(self, coroutine) -> concurrent.futures.Future | None:
@@ -156,8 +160,11 @@ class PorterRuntimeThread(QThread):
     @Slot(str)
     def submit(self, command: str) -> None:
         text = command.strip()
+        if not text:
+            return
         runtime = self._runtime
-        if not text or runtime is None:
+        if runtime is None:
+            self.commandFailed.emit("Porter runtime is not ready.")
             return
 
         future = self._schedule(
@@ -169,14 +176,20 @@ class PorterRuntimeThread(QThread):
         if future is None:
             self.commandFailed.emit("Porter runtime is not ready.")
             return
+        terminal_event_serial = self._terminal_event_serial
 
         def finished(done: concurrent.futures.Future) -> None:
             try:
                 result = done.result()
-            except Exception as error:
-                self.commandFailed.emit(str(error))
+            except PorterBusyError as error:
+                self.commandRejected.emit(str(error))
                 return
-            self.commandFinished.emit(result.status, result.message)
+            except Exception as error:
+                if self._terminal_event_serial == terminal_event_serial:
+                    self.commandFailed.emit(str(error))
+                return
+            if self._terminal_event_serial == terminal_event_serial:
+                self.commandFinished.emit(result.status, result.message)
 
         future.add_done_callback(finished)
 
@@ -184,6 +197,7 @@ class PorterRuntimeThread(QThread):
     def setListening(self, enabled: bool) -> None:
         runtime = self._runtime
         if runtime is None:
+            self.commandFailed.emit("Porter runtime is not ready.")
             return
         future = self._schedule(
             runtime.set_hands_free(
@@ -203,6 +217,37 @@ class PorterRuntimeThread(QThread):
 
         future.add_done_callback(finished)
 
+    @Slot()
+    def startOneShotListening(self) -> None:
+        runtime = self._runtime
+        if runtime is None:
+            self.commandFailed.emit("Porter runtime is not ready.")
+            return
+        future = self._schedule(runtime.listen_once(self._voice_config))
+        if future is None:
+            self.commandFailed.emit("Porter runtime is not ready.")
+            return
+
+        def finished(done: concurrent.futures.Future) -> None:
+            try:
+                done.result()
+            except PorterBusyError as error:
+                self.commandRejected.emit(str(error))
+            except Exception as error:
+                self.commandFailed.emit(str(error))
+
+        future.add_done_callback(finished)
+
+    @Slot()
+    def cancelOneShotListening(self) -> None:
+        runtime = self._runtime
+        if runtime is None:
+            return
+        future = self._schedule(runtime.cancel_listen_once())
+        if future is None:
+            return
+        future.add_done_callback(lambda done: done.exception())
+
     def reconfigure(
         self,
         config: PorterRuntimeConfig,
@@ -217,9 +262,13 @@ class PorterRuntimeThread(QThread):
             current = self._runtime
             if current is None:
                 raise RuntimeError("Porter runtime is not ready.")
-            if current.busy:
+            if current.busy or current.cancelling:
                 raise RuntimeError(
                     "Wait for the current Porter command to finish before applying settings."
+                )
+            if current.one_shot_voice_active:
+                raise RuntimeError(
+                    "Finish or cancel the current voice recording before applying settings."
                 )
 
             old_config = self._config
@@ -394,7 +443,10 @@ class PorterViewModel(QObject):
     statusTextChanged = Signal()
     detailTextChanged = Signal()
     busyChanged = Signal()
+    cancellingChanged = Signal()
     listeningChanged = Signal()
+    manualVoiceActiveChanged = Signal()
+    voiceInputStateChanged = Signal()
     micLevelChanged = Signal()
     voiceSilenceSecondsChanged = Signal()
     transcriptChanged = Signal()
@@ -417,7 +469,10 @@ class PorterViewModel(QObject):
         self._status_text = "Starting Porter…"
         self._detail_text = "Connecting to the desktop runtime"
         self._busy = False
+        self._cancelling = False
         self._listening = False
+        self._manual_voice_active = False
+        self._voice_input_state = "idle"
         self._mic_level = 0.0
         self._transcript = ""
         self._last_command = ""
@@ -433,6 +488,7 @@ class PorterViewModel(QObject):
         worker.runtimeFailed.connect(self._on_runtime_failed)
         worker.commandFinished.connect(self._on_command_finished)
         worker.commandFailed.connect(self._on_command_failed)
+        worker.commandRejected.connect(self._on_command_rejected)
         worker.reconfigured.connect(self._on_runtime_reconfigured)
         worker.reconfigureFailed.connect(self._on_runtime_reconfigure_failed)
         worker.shortcutStatusChanged.connect(self._on_shortcut_status)
@@ -455,9 +511,25 @@ class PorterViewModel(QObject):
     def busy(self) -> bool:
         return self._busy
 
+    @Property(bool, notify=cancellingChanged)
+    def cancelling(self) -> bool:
+        return self._cancelling
+
     @Property(bool, notify=listeningChanged)
     def listening(self) -> bool:
         return self._listening
+
+    @Property(bool, notify=listeningChanged)
+    def handsFreeActive(self) -> bool:
+        return self._listening
+
+    @Property(bool, notify=manualVoiceActiveChanged)
+    def manualVoiceActive(self) -> bool:
+        return self._manual_voice_active
+
+    @Property(str, notify=voiceInputStateChanged)
+    def voiceInputState(self) -> str:
+        return self._voice_input_state
 
     @Property(float, notify=micLevelChanged)
     def micLevel(self) -> float:
@@ -520,12 +592,33 @@ class PorterViewModel(QObject):
         self._busy = value
         self.busyChanged.emit()
 
+    def _set_cancelling(self, value: bool) -> None:
+        value = bool(value)
+        if value == self._cancelling:
+            return
+        self._cancelling = value
+        self.cancellingChanged.emit()
+
     def _set_listening(self, value: bool) -> None:
         value = bool(value)
         if value == self._listening:
             return
         self._listening = value
         self.listeningChanged.emit()
+
+    def _set_manual_voice_active(self, value: bool) -> None:
+        value = bool(value)
+        if value == self._manual_voice_active:
+            return
+        self._manual_voice_active = value
+        self.manualVoiceActiveChanged.emit()
+
+    def _set_voice_input_state(self, value: str) -> None:
+        value = str(value)
+        if value == self._voice_input_state:
+            return
+        self._voice_input_state = value
+        self.voiceInputStateChanged.emit()
 
     def _set_mic_level(self, value: float) -> None:
         value = max(0.0, min(1.0, float(value)))
@@ -543,7 +636,12 @@ class PorterViewModel(QObject):
     @Slot(str)
     def submitCommand(self, command: str) -> None:
         text = command.strip()
-        if not text or self._busy:
+        if (
+            not text
+            or self._busy
+            or self._cancelling
+            or self._manual_voice_active
+        ):
             return
         self._last_command = text
         self.lastCommandChanged.emit()
@@ -555,14 +653,41 @@ class PorterViewModel(QObject):
 
     @Slot()
     def cancelCurrent(self) -> None:
-        if not self._busy:
+        if not self._busy or self._cancelling:
             return
-        self._set_status("Cancelling…")
+        self._set_cancelling(True)
+        self._set_status("Stopping…")
         self._worker.cancel()
 
     @Slot()
     def toggleListening(self) -> None:
+        if self._manual_voice_active:
+            return
         self._worker.setListening(not self._listening)
+
+    @Slot()
+    def startOneShotListening(self) -> None:
+        if (
+            self._busy
+            or self._cancelling
+            or self._listening
+            or self._manual_voice_active
+        ):
+            return
+        self._worker.startOneShotListening()
+
+    @Slot()
+    def cancelOneShotListening(self) -> None:
+        if not self._manual_voice_active:
+            return
+        self._worker.cancelOneShotListening()
+
+    @Slot()
+    def toggleOneShotListening(self) -> None:
+        if self._manual_voice_active:
+            self.cancelOneShotListening()
+        else:
+            self.startOneShotListening()
 
     @Slot(bool)
     def setListening(self, enabled: bool) -> None:
@@ -581,8 +706,11 @@ class PorterViewModel(QObject):
 
     @Slot()
     def restartBackend(self) -> None:
-        if self._busy:
+        if self._busy or self._cancelling:
             self._set_status("Finish the current task first")
+            return
+        if self._manual_voice_active:
+            self._set_status("Finish or cancel the current voice recording first")
             return
         self._set_state("starting")
         self._set_status("Restarting Porter backend…")
@@ -624,7 +752,8 @@ class PorterViewModel(QObject):
         elif kind == "agent_progress":
             self._set_status(event.message or "Working…")
         elif kind == "command_cancel_requested":
-            self._set_status("Cancelling…")
+            self._set_cancelling(True)
+            self._set_status("Stopping…")
         elif kind == "voice_listening_started":
             self._set_listening(True)
             self._set_mic_level(0.0)
@@ -638,15 +767,42 @@ class PorterViewModel(QObject):
                     self._voice_silence_seconds = value
                     self.voiceSilenceSecondsChanged.emit()
             if not self._busy:
+                self._set_state("ready")
                 self._set_status("Listening")
                 self._set_detail("Speak naturally — Porter will submit when you stop")
         elif kind == "voice_listening_stopped":
             self._set_listening(False)
             self._set_mic_level(0.0)
             if not self._busy:
+                self._set_state("ready")
                 self._set_status("Ready")
                 self._set_detail("Type a command or enable hands-free listening")
+        elif kind == "voice_once_started":
+            self._set_manual_voice_active(True)
+            self._set_voice_input_state("waiting")
+            self._set_mic_level(0.0)
+            self._set_state("listening")
+            self._set_status("Listening…")
+            self._set_detail("Speak one command")
+        elif kind == "voice_once_cancelled":
+            self._set_manual_voice_active(False)
+            self._set_voice_input_state("idle")
+            self._set_mic_level(0.0)
+            if not self._busy:
+                self._set_state("ready")
+                self._set_status("Ready")
+                self._set_detail("Voice recording cancelled")
+        elif kind == "voice_once_finished":
+            self._set_manual_voice_active(False)
+            self._set_voice_input_state("idle")
+            self._set_mic_level(0.0)
+            if event.data.get("status") == "no_speech" and not self._busy:
+                self._set_state("ready")
+                self._set_status("Ready")
+                self._set_detail("No speech detected")
         elif kind == "voice_speech_started":
+            if event.data.get("mode") == "one_shot":
+                self._set_voice_input_state("speech")
             self._set_state("listening")
             self._set_status("Listening…")
             self._set_detail("Keep speaking")
@@ -656,6 +812,8 @@ class PorterViewModel(QObject):
             self._set_mic_level(0.0)
             self._set_status("Finishing…")
         elif kind == "voice_transcribing":
+            if event.data.get("mode") == "one_shot":
+                self._set_voice_input_state("transcribing")
             self._set_state("working")
             self._set_status("Transcribing…")
         elif kind == "voice_transcript":
@@ -679,6 +837,17 @@ class PorterViewModel(QObject):
             self._set_state("attention")
             self._set_status("Voice unavailable")
             self._set_detail(event.message)
+        elif kind == "voice_transcription_failed":
+            self._set_mic_level(0.0)
+            if event.data.get("mode") == "one_shot":
+                self._set_manual_voice_active(False)
+                self._set_voice_input_state("idle")
+                self._set_state("attention")
+                self._set_status("Transcription failed")
+            else:
+                self._set_state("attention")
+                self._set_status("Transcription failed — still listening")
+            self._set_detail(event.message)
         elif kind in {"voice_error", "voice_command_failed"}:
             self._set_listening(False)
             self._set_mic_level(0.0)
@@ -687,13 +856,15 @@ class PorterViewModel(QObject):
             self._set_detail(event.message)
         elif kind == "command_completed":
             self._set_busy(False)
+            self._set_cancelling(False)
             status = str(event.data.get("status") or "completed")
             if status == "completed":
                 self._set_state("ready")
                 self._set_status("Done")
             elif status == "cancelled":
                 self._set_state("ready")
-                self._set_status("Cancelled")
+                self._set_status("Ready")
+                self._set_detail("Previous task cancelled.")
             else:
                 self._set_state("attention")
                 self._set_status(status.replace("_", " ").title())
@@ -701,12 +872,15 @@ class PorterViewModel(QObject):
             self._set_mic_level(0.0)
         elif kind in {"command_failed", "runtime_failed"}:
             self._set_busy(False)
+            self._set_cancelling(False)
             self._set_state("error")
             self._set_status("Porter needs attention")
             self._set_detail(event.message)
 
     @Slot()
     def _on_runtime_ready(self) -> None:
+        self._set_busy(False)
+        self._set_cancelling(False)
         self._set_state("ready")
         self._set_status("Ready")
         self._set_detail("Porter is connected to your desktop")
@@ -726,13 +900,28 @@ class PorterViewModel(QObject):
         if status == "completed":
             self._set_state("ready")
             self._set_status("Done")
+        elif status == "cancelled":
+            self._set_state("ready")
+            self._set_status("Cancelled")
+        else:
+            self._set_state("attention")
+            self._set_status(status.replace("_", " ").title())
         self._set_detail(message)
 
     @Slot(str)
     def _on_command_failed(self, message: str) -> None:
         self._set_busy(False)
+        self._set_cancelling(False)
         self._set_state("error")
         self._set_status("Command failed")
+        self._set_detail(message)
+
+    @Slot(str)
+    def _on_command_rejected(self, message: str) -> None:
+        if self._busy or self._cancelling:
+            return
+        self._set_state("attention")
+        self._set_status("Porter is busy")
         self._set_detail(message)
 
     @Slot()

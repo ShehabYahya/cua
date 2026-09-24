@@ -9,6 +9,7 @@ Window {
     width: 700
     height: 104
     minimumWidth: 540
+    maximumWidth: 960
     maximumHeight: 104
     visible: false
     color: "transparent"
@@ -17,6 +18,8 @@ Window {
 
     property bool hovered: hover.hovered
     property bool engaged: porter.busy
+        || porter.cancelling
+        || porter.manualVoiceActive
         || porter.state === "listening"
         || porter.state === "error"
         || porter.state === "attention"
@@ -28,6 +31,32 @@ Window {
             ? settingsModel.compactHoverOpacity
             : settingsModel.compactIdleOpacity
 
+    onVisibleChanged: {
+        if (visible) {
+            Qt.callLater(function() {
+                commandField.forceActiveFocus()
+            })
+        }
+    }
+
+    Shortcut {
+        sequence: "Escape"
+        onActivated: root.hide()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+L"
+        onActivated: {
+            commandField.forceActiveFocus()
+            commandField.selectAll()
+        }
+    }
+
+    Behavior on panelOpacity {
+        enabled: settingsModel.animationsEnabled
+        NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+    }
+
     readonly property string requestStatus: {
         const detail = porter.detailText || ""
         if (porter.state === "error")
@@ -38,10 +67,16 @@ Window {
             return detail.length
                 ? porter.statusText + " — " + detail
                 : porter.statusText
+        if (porter.cancelling)
+            return "Stopping…"
         if (porter.busy)
             return detail.length
                 ? porter.statusText + " — " + detail
                 : porter.statusText
+        if (porter.manualVoiceActive)
+            return porter.voiceInputState === "transcribing"
+                ? "Transcribing…"
+                : "Listening for one command…"
         if (porter.state === "listening")
             return "Listening…"
         if (porter.statusText === "Done")
@@ -116,6 +151,9 @@ Window {
                 Layout.preferredWidth: 22
                 Layout.fillHeight: true
 
+                Accessible.role: Accessible.Grip
+                Accessible.name: "Move Quick Bar"
+
                 Text {
                     anchors.centerIn: parent
                     text: "⠿"
@@ -156,6 +194,8 @@ Window {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 42
                     enabled: !porter.busy
+                        && !porter.cancelling
+                        && !porter.manualVoiceActive
                     placeholderText: porter.state === "listening"
                         ? "Listening…"
                         : porter.listening
@@ -167,6 +207,10 @@ Window {
                     leftPadding: 12
                     rightPadding: 12
                     selectByMouse: true
+                    activeFocusOnTab: true
+
+                    Accessible.name: "Porter command"
+                    Accessible.description: "Type a desktop task and press Enter to run it"
 
                     background: Rectangle {
                         radius: 11
@@ -198,6 +242,7 @@ Window {
                     ) ? Font.DemiBold : Font.Normal
                     elide: Text.ElideRight
                     maximumLineCount: 1
+                    Accessible.name: text
                 }
             }
 
@@ -205,13 +250,29 @@ Window {
                 id: voiceButton
                 Layout.preferredWidth: 42
                 Layout.preferredHeight: 42
-                enabled: !porter.busy
-                text: porter.listening ? "●" : "◉"
+                enabled: !porter.busy && !porter.cancelling
+                text: porter.manualVoiceActive
+                    ? "●"
+                    : porter.handsFreeActive
+                        ? "●"
+                        : "◉"
+                hoverEnabled: true
+                focusPolicy: Qt.StrongFocus
+                Accessible.name: porter.handsFreeActive
+                    ? "Mute hands-free listening"
+                    : porter.manualVoiceActive
+                        ? "Cancel voice recording"
+                        : "Speak one command"
+                ToolTip.visible: hovered
+                ToolTip.text: Accessible.name
+                ToolTip.delay: 550
 
                 contentItem: Text {
                     text: voiceButton.text
-                    color: porter.listening ? settingsModel.accentColor : "#8AA3C2"
-                    font.pixelSize: porter.listening ? 18 : 17
+                    color: (porter.handsFreeActive || porter.manualVoiceActive)
+                        ? settingsModel.accentColor
+                        : "#8AA3C2"
+                    font.pixelSize: 18
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
@@ -223,7 +284,12 @@ Window {
                         : "transparent"
                 }
 
-                onClicked: porter.toggleListening()
+                onClicked: {
+                    if (porter.handsFreeActive)
+                        porter.setListening(false)
+                    else
+                        porter.toggleOneShotListening()
+                }
             }
 
             ToolButton {
@@ -231,6 +297,12 @@ Window {
                 Layout.preferredWidth: 42
                 Layout.preferredHeight: 42
                 text: "⚙"
+                hoverEnabled: true
+                focusPolicy: Qt.StrongFocus
+                Accessible.name: "Open Porter settings"
+                ToolTip.visible: hovered
+                ToolTip.text: Accessible.name
+                ToolTip.delay: 550
 
                 contentItem: Text {
                     text: mainButton.text
@@ -252,14 +324,21 @@ Window {
 
             ToolButton {
                 id: submitButton
-                visible: commandField.text.trim().length > 0 || porter.busy
+                visible: commandField.text.trim().length > 0 && !porter.busy
                 Layout.preferredWidth: 42
                 Layout.preferredHeight: 42
-                text: porter.busy ? "×" : "→"
+                text: "→"
+                hoverEnabled: true
+                focusPolicy: Qt.StrongFocus
+                enabled: !porter.cancelling && !porter.manualVoiceActive
+                Accessible.name: "Run command"
+                ToolTip.visible: hovered
+                ToolTip.text: Accessible.name
+                ToolTip.delay: 550
 
                 contentItem: Text {
                     text: submitButton.text
-                    color: porter.busy ? "#FF8BA0" : "#E9F7FF"
+                    color: "#E9F7FF"
                     font.pixelSize: 20
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
@@ -267,27 +346,30 @@ Window {
 
                 background: Rectangle {
                     radius: 12
-                    color: porter.busy
-                        ? Qt.rgba(0.45, 0.10, 0.16, submitButton.hovered ? 0.48 : 0.30)
-                        : Qt.rgba(
-                            root.accent.r,
-                            root.accent.g,
-                            root.accent.b,
-                            submitButton.hovered ? 0.82 : 0.64
-                        )
+                    color: Qt.rgba(
+                        root.accent.r,
+                        root.accent.g,
+                        root.accent.b,
+                        submitButton.hovered ? 0.82 : 0.64
+                    )
                 }
 
                 onClicked: {
-                    if (porter.busy) {
-                        porter.cancelCurrent()
-                    } else {
-                        const value = commandField.text.trim()
-                        if (value.length > 0) {
-                            porter.submitCommand(value)
-                            commandField.text = ""
-                        }
+                    const value = commandField.text.trim()
+                    if (value.length > 0) {
+                        porter.submitCommand(value)
+                        commandField.text = ""
                     }
                 }
+            }
+
+            PorterStopButton {
+                visible: porter.busy
+                || porter.cancelling
+                Layout.preferredWidth: 42
+                Layout.preferredHeight: 42
+                cancelling: porter.cancelling
+                onStopRequested: porter.cancelCurrent()
             }
         }
     }

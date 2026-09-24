@@ -200,6 +200,56 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(driver.counter, 0)
         self.assertEqual(driver.executed, [])
 
+    def test_cancel_after_atomic_execute_skips_post_action_observation(self):
+        cancel = asyncio.Event()
+
+        class CancellingDriver(FakeDriver):
+            async def execute(self, candidate):
+                self.executed.append(candidate.id)
+                self.clicked = True
+                cancel.set()
+                return {"effect": "confirmed"}
+
+        driver = CancellingDriver()
+        agent = AgentLoop(driver, FakeChooser())
+        result = asyncio.run(
+            agent.run(
+                "open new tab",
+                act=True,
+                cancel_event=cancel,
+            )
+        )
+        self.assertEqual(result.status, "cancelled")
+        self.assertEqual(driver.executed, ["click-1"])
+        # Only the initial observation is allowed. The post-action state read is
+        # fenced once cancellation becomes visible.
+        self.assertEqual(driver.counter, 1)
+
+    def test_cancel_wins_over_driver_session_revival(self):
+        cancel = asyncio.Event()
+
+        class EndingDriver(FakeDriver):
+            async def execute(self, candidate):
+                self.executed.append(candidate.id)
+                cancel.set()
+                raise DriverRefusal(
+                    "session ended",
+                    code="session_ended",
+                )
+
+        driver = EndingDriver()
+        agent = AgentLoop(driver, FakeChooser())
+        result = asyncio.run(
+            agent.run(
+                "open new tab",
+                act=True,
+                cancel_event=cancel,
+            )
+        )
+        self.assertEqual(result.status, "cancelled")
+        self.assertEqual(driver.revived, 0)
+        self.assertEqual(driver.counter, 1)
+
     def test_no_change_route_is_suppressed_then_focused_typing_succeeds(self):
         class TypeDriver(FakeDriver):
             def __init__(self):

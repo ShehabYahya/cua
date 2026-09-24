@@ -6,6 +6,7 @@ import io
 import math
 import shutil
 import subprocess
+import tempfile
 import threading
 import wave
 from collections import deque
@@ -17,38 +18,171 @@ from openrouter_client import DEFAULT_STT_MODEL, OpenRouterClient
 
 
 class LocalSpeaker:
-    def __init__(self, enabled: bool = False) -> None:
+    def __init__(
+        self,
+        enabled: bool = False,
+        *,
+        api_base: str = "http://127.0.0.1:9393/v1",
+        model: str = "qwen3-tts-1.7b-customvoice",
+        voice: str = "Vivian",
+        language: str = "English",
+        instructions: str = "",
+        pause_event: threading.Event | None = None,
+    ) -> None:
         self.enabled = enabled
-        self.binary = shutil.which("spd-say") or shutil.which("espeak-ng") or shutil.which("espeak")
+        self.api_base = api_base.rstrip("/")
+        self.model = model
+        self.voice = voice
+        self.language = language
+        self.instructions = instructions
+        self.pause_event = pause_event
+        self.binary = (
+            shutil.which("spd-say")
+            or shutil.which("espeak-ng")
+            or shutil.which("espeak")
+        )
+        self._process_lock = threading.Lock()
+        self._process: subprocess.Popen | None = None
+        self._interrupted = threading.Event()
 
     def show(self, text: str) -> None:
         print(f"[assistant] {text}", flush=True)
 
     async def say(self, text: str) -> None:
         self.show(text)
-        if not self.enabled or not self.binary or not text.strip():
+        if not self.enabled or not text.strip():
+            return
+        with self._process_lock:
+            self._interrupted.clear()
+        try:
+            await asyncio.to_thread(self._speak_sync, text)
+        except Exception:
+            if self.binary and not self._interrupted.is_set():
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(self._speak_fallback, text)
+
+    async def interrupt(self) -> None:
+        """Stop active local playback without disabling future TTS."""
+        await asyncio.to_thread(self._interrupt_sync)
+
+    def interrupt_now(self) -> None:
+        """Synchronously signal cancellation and stop any active player."""
+        self._interrupt_sync()
+
+    async def wait_until_idle(self) -> None:
+        """Wait until the currently owned playback process has released."""
+        await asyncio.to_thread(self._wait_until_idle_sync)
+
+    def _interrupt_sync(self) -> None:
+        with self._process_lock:
+            self._interrupted.set()
+            process = self._process
+        if process is None:
             return
         try:
-            # Speech runs in a worker thread and is awaited, so TTS never blocks
-            # the asyncio event loop and is never left as fire-and-forget.
-            await asyncio.to_thread(self._speak_sync, text)
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=1.0)
+        except Exception:
+            pass
+        finally:
+            with self._process_lock:
+                if self._process is process:
+                    self._process = None
+
+    def _wait_until_idle_sync(self) -> None:
+        with self._process_lock:
+            process = self._process
+        if process is None:
+            return
+        try:
+            process.wait(timeout=30.0)
         except Exception:
             pass
 
+    def _play(self, command: list[str], *, timeout: float) -> None:
+        with self._process_lock:
+            if self._interrupted.is_set():
+                return
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._process = process
+        try:
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.terminate()
+                    process.wait(timeout=1.0)
+                except Exception:
+                    try:
+                        process.kill()
+                        process.wait(timeout=1.0)
+                    except Exception:
+                        pass
+        finally:
+            with self._process_lock:
+                if self._process is process:
+                    self._process = None
+
     def _speak_sync(self, text: str) -> None:
+        if self.pause_event is not None:
+            self.pause_event.set()
+        try:
+            if self._interrupted.is_set():
+                return
+            import httpx
+
+            response = httpx.post(
+                f"{self.api_base}/audio/speech",
+                json={
+                    "model": self.model,
+                    "input": text[:600],
+                    "voice": self.voice,
+                    "language": self.language,
+                    "response_format": "wav",
+                    "instructions": self.instructions,
+                },
+                timeout=360,
+            )
+            response.raise_for_status()
+            if self._interrupted.is_set():
+                return
+            player = shutil.which("aplay") or shutil.which("pw-play")
+            if not player:
+                raise RuntimeError("no local WAV player found")
+            with tempfile.NamedTemporaryFile(suffix=".wav") as audio:
+                audio.write(response.content)
+                audio.flush()
+                command = [player, audio.name]
+                if player.endswith("aplay"):
+                    command.insert(1, "-q")
+                self._play(command, timeout=360.0)
+        finally:
+            if self.pause_event is not None:
+                self.pause_event.clear()
+
+    def _speak_fallback(self, text: str) -> None:
+        if not self.binary or self._interrupted.is_set():
+            return
         command = [self.binary]
         if self.binary.endswith("spd-say"):
-            # Without --wait spd-say returns before speech finishes, so awaiting
-            # the worker thread would not await speech completion.
             command.append("--wait")
         command.append(text[:1200])
-        subprocess.run(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=30,
-            check=False,
-        )
+        if self.pause_event is not None:
+            self.pause_event.set()
+        try:
+            self._play(command, timeout=30.0)
+        finally:
+            if self.pause_event is not None:
+                self.pause_event.clear()
 
 
 class Microphone:

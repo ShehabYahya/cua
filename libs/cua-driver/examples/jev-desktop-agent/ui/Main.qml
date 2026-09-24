@@ -15,8 +15,48 @@ ApplicationWindow {
     title: "Porter"
     color: "#07101F"
 
+    palette.window: "#081426"
+    palette.windowText: "#DCEAFF"
+    palette.base: "#0B192C"
+    palette.alternateBase: "#10233A"
+    palette.text: "#E9F4FF"
+    palette.button: "#10243B"
+    palette.buttonText: "#D7E6F8"
+    palette.highlight: accent
+    palette.highlightedText: "#FFFFFF"
+    palette.placeholderText: "#60748F"
+
     property int currentPage: 0
     property color accent: settingsModel.accentColor
+
+    onCurrentPageChanged: {
+        if (settingsModel.animationsEnabled)
+            pageFade.restart()
+    }
+
+    NumberAnimation {
+        id: pageFade
+        target: contentStack
+        property: "opacity"
+        from: 0.58
+        to: 1.0
+        duration: 190
+        easing.type: Easing.OutCubic
+    }
+
+    Shortcut {
+        sequence: "Ctrl+K"
+        onActivated: porter.toggleCompact()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+L"
+        onActivated: {
+            root.currentPage = 0
+            commandField.forceActiveFocus()
+            commandField.selectAll()
+        }
+    }
 
     onClosing: function(close) {
         close.accepted = false
@@ -41,6 +81,15 @@ ApplicationWindow {
             x: parent.width - 340
             y: -280
             color: Qt.rgba(0.08, 0.42, 0.78, 0.08)
+        }
+
+        Rectangle {
+            width: 460
+            height: 460
+            radius: width / 2
+            x: 140
+            y: parent.height - 210
+            color: Qt.rgba(0.18, 0.30, 0.68, 0.035)
         }
 
         RowLayout {
@@ -110,6 +159,7 @@ ApplicationWindow {
                         ]
 
                         delegate: Rectangle {
+                            id: navItem
                             required property int index
                             required property string modelData
 
@@ -126,17 +176,42 @@ ApplicationWindow {
                                 : navHover.hovered
                                     ? Qt.rgba(0.20, 0.38, 0.58, 0.12)
                                     : "transparent"
-                            border.width: root.currentPage === index ? 1 : 0
+                            activeFocusOnTab: true
+                            border.width: root.currentPage === index || activeFocus ? 1 : 0
                             border.color: Qt.rgba(
                                 root.accent.r,
                                 root.accent.g,
                                 root.accent.b,
-                                0.35
+                                activeFocus ? 0.72 : 0.35
                             )
+
+                            Accessible.role: Accessible.PageTab
+                            Accessible.name: modelData
+                            Accessible.selected: root.currentPage === index
+
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 7
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 3
+                                height: root.currentPage === navItem.index ? 20 : 0
+                                radius: width / 2
+                                color: root.accent
+                                opacity: root.currentPage === navItem.index ? 1 : 0
+
+                                Behavior on height {
+                                    enabled: settingsModel.animationsEnabled
+                                    NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                                }
+                                Behavior on opacity {
+                                    enabled: settingsModel.animationsEnabled
+                                    NumberAnimation { duration: 120 }
+                                }
+                            }
 
                             Text {
                                 anchors.left: parent.left
-                                anchors.leftMargin: 14
+                                anchors.leftMargin: 18
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: modelData
                                 color: root.currentPage === index ? "#E8F5FF" : "#8DA3BF"
@@ -151,6 +226,9 @@ ApplicationWindow {
                             TapHandler {
                                 onTapped: root.currentPage = index
                             }
+
+                            Keys.onReturnPressed: root.currentPage = index
+                            Keys.onSpacePressed: root.currentPage = index
 
                             Behavior on color {
                                 ColorAnimation { duration: 130 }
@@ -180,7 +258,7 @@ ApplicationWindow {
 
                             Column {
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - 50
+                                width: parent.width - 50 - (porter.busy ? 52 : 0)
                                 spacing: 4
 
                                 Text {
@@ -200,6 +278,14 @@ ApplicationWindow {
                                     elide: Text.ElideRight
                                 }
                             }
+
+                            PorterStopButton {
+                                width: 42
+                                height: 42
+                                visible: porter.busy || porter.cancelling
+                                cancelling: porter.cancelling
+                                onStopRequested: porter.cancelCurrent()
+                            }
                         }
                     }
                 }
@@ -210,6 +296,7 @@ ApplicationWindow {
                 Layout.fillHeight: true
 
                 StackLayout {
+                    id: contentStack
                     anchors.fill: parent
                     anchors.margins: 34
                     currentIndex: root.currentPage
@@ -262,8 +349,8 @@ ApplicationWindow {
                                         Layout.fillWidth: true
 
                                         PorterRing {
-                                            width: 40
-                                            height: 40
+                                            Layout.preferredWidth: 40
+                                            Layout.preferredHeight: 40
                                             state: porter.state
                                             listening: porter.state === "listening"
                                             accent: settingsModel.accentColor
@@ -299,9 +386,15 @@ ApplicationWindow {
                                         placeholderTextColor: "#5F7593"
                                         font.pixelSize: 15
                                         leftPadding: 18
-                                        rightPadding: 128
+                                        rightPadding: 172
                                         enabled: !porter.busy
+                                            && !porter.cancelling
+                                            && !porter.manualVoiceActive
                                         selectByMouse: true
+                                        activeFocusOnTab: true
+
+                                        Accessible.name: "Porter command"
+                                        Accessible.description: "Type a desktop task and press Enter to run it"
 
                                         background: Rectangle {
                                             radius: 15
@@ -325,15 +418,66 @@ ApplicationWindow {
                                             }
                                         }
 
+                                        ToolButton {
+                                            id: homeVoiceButton
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 120
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 42
+                                            height: 42
+                                            visible: !porter.handsFreeActive && !porter.busy
+                                            enabled: !porter.cancelling
+                                            hoverEnabled: true
+                                            text: porter.manualVoiceActive ? "●" : "◉"
+                                            Accessible.name: porter.manualVoiceActive
+                                                ? "Cancel voice recording"
+                                                : "Speak one command"
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: Accessible.name
+                                            ToolTip.delay: 450
+
+                                            contentItem: Text {
+                                                text: homeVoiceButton.text
+                                                color: porter.manualVoiceActive
+                                                    ? settingsModel.accentColor
+                                                    : "#8AA3C2"
+                                                font.pixelSize: 18
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+
+                                            background: Rectangle {
+                                                radius: 12
+                                                color: homeVoiceButton.hovered
+                                                    ? Qt.rgba(0.10, 0.34, 0.56, 0.28)
+                                                    : "transparent"
+                                            }
+
+                                            onClicked: porter.toggleOneShotListening()
+                                        }
+
                                         AuroraButton {
                                             anchors.right: parent.right
                                             anchors.rightMargin: 8
                                             anchors.verticalCenter: parent.verticalCenter
                                             width: 104
-                                            text: porter.busy ? "Working" : "Run"
+                                            visible: !porter.busy
+                                            text: "Run"
                                             primary: true
-                                            enabled: !porter.busy
+                                            enabled: !porter.cancelling
+                                                && !porter.manualVoiceActive
                                             onClicked: commandField.accepted()
+                                        }
+
+                                        PorterStopButton {
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 8
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 42
+                                            height: 42
+                                            visible: porter.busy || porter.cancelling
+                                            cancelling: porter.cancelling
+                                            onStopRequested: porter.cancelCurrent()
                                         }
                                     }
                                 }
@@ -397,8 +541,10 @@ ApplicationWindow {
                                         }
 
                                         AuroraButton {
-                                            text: porter.listening ? "Mute" : "Enable"
+                                            text: porter.handsFreeActive ? "Mute" : "Enable"
                                             enabled: !porter.busy
+                                                && !porter.cancelling
+                                                && !porter.manualVoiceActive
                                             onClicked: porter.toggleListening()
                                         }
                                     }
@@ -434,12 +580,6 @@ ApplicationWindow {
 
                                     RowLayout {
                                         Layout.fillWidth: true
-
-                                        AuroraButton {
-                                            text: "Cancel current task"
-                                            enabled: porter.busy
-                                            onClicked: porter.cancelCurrent()
-                                        }
 
                                         Item { Layout.fillWidth: true }
 

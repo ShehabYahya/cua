@@ -29,13 +29,29 @@ Item {
         color: "transparent"
         border.width: 2
         border.color: root.ringColor
-        opacity: root.state === "starting" ? 0.45 : 0.9
+        opacity: root.state === "starting" ? 0.55 : 0.9
 
         Behavior on border.color {
+            enabled: root.animationsEnabled
             ColorAnimation { duration: 180 }
         }
         Behavior on opacity {
+            enabled: root.animationsEnabled
             NumberAnimation { duration: 180 }
+        }
+    }
+
+    Rectangle {
+        anchors.centerIn: parent
+        width: Math.max(4, parent.width * 0.12)
+        height: width
+        radius: width / 2
+        color: root.ringColor
+        opacity: root.state === "ready" ? 0.38 : 0.78
+
+        Behavior on color {
+            enabled: root.animationsEnabled
+            ColorAnimation { duration: 180 }
         }
     }
 
@@ -61,7 +77,9 @@ Item {
             color: root.ringColor
             anchors.horizontalCenter: parent.horizontalCenter
             y: 0
-            opacity: root.state === "working" || root.listening ? 1.0 : 0.0
+            opacity: root.state === "working"
+                || root.state === "starting"
+                || root.listening ? 1.0 : 0.0
         }
 
         RotationAnimator {
@@ -70,7 +88,11 @@ Item {
             to: 360
             duration: root.listening ? 900 : 1500
             loops: Animation.Infinite
-            running: root.animationsEnabled && (root.state === "working" || root.listening)
+            running: root.animationsEnabled && (
+                root.state === "working"
+                || root.state === "starting"
+                || root.listening
+            )
         }
     }
 

@@ -140,11 +140,14 @@ class DownloadTracker:
         *,
         timeout: float = 0.0,
         interval: float = 0.25,
+        stop_event=None,
     ) -> tuple[FileStamp, ...]:
         if self.root is None:
             return ()
         deadline = asyncio.get_running_loop().time() + max(0.0, timeout)
         while True:
+            if stop_event is not None and stop_event.is_set():
+                return ()
             after = self.snapshot()
             changed = self.changed(before, after)
             if changed:

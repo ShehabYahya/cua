@@ -55,7 +55,42 @@ class ImmediateWorker(QObject):
         return object()
 
 
+class DelayedWorker(QObject):
+    reconfigured = Signal()
+    reconfigureFailed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def reconfigure(self, runtime, voice, shortcut):
+        self.calls.append((runtime, voice, shortcut))
+        return object()
+
+
 class PorterSettingsTest(unittest.TestCase):
+    def test_corrupt_numeric_and_color_settings_fall_back_safely(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qsettings = QSettings(
+                str(Path(tmp) / "porter.ini"),
+                QSettings.IniFormat,
+            )
+            qsettings.setValue("voice/silence", "not-a-number")
+            qsettings.setValue("appearance/accent_color", "not-a-color")
+            qsettings.setValue("appearance/compact_idle_opacity", -5)
+            qsettings.setValue("appearance/compact_hover_opacity", "nan")
+            qsettings.setValue("advanced/max_steps", 9999)
+            qsettings.setValue("advanced/max_candidates", "broken")
+
+            actual = PorterSettingsStore(qsettings).load()
+
+            self.assertAlmostEqual(actual.voice_silence, 0.55)
+            self.assertEqual(actual.accent_color, "#49A7FF")
+            self.assertAlmostEqual(actual.compact_idle_opacity, 0.08)
+            self.assertAlmostEqual(actual.compact_hover_opacity, 0.72)
+            self.assertEqual(actual.max_steps, 200)
+            self.assertEqual(actual.max_candidates, 32)
+
     def test_qsettings_round_trip_keeps_runtime_choices(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "porter.ini"
@@ -173,6 +208,68 @@ class PorterSettingsTest(unittest.TestCase):
                 "permissive",
             )
             self.assertEqual(model.applyStatus, "Settings applied.")
+
+    def test_apply_freezes_snapshot_and_preserves_newer_edits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = Path(tmp) / "porter.ini"
+            store = PorterSettingsStore(
+                QSettings(str(qpath), QSettings.IniFormat)
+            )
+            store.save(PorterAppSettings())
+            worker = DelayedWorker()
+            model = PorterSettingsModel(
+                worker,
+                store=store,
+                secrets=SecretStore(FakeKeyring()),
+                autostart=AutostartManager(
+                    ["/opt/porter/porter"],
+                    path=Path(tmp) / "autostart.desktop",
+                ),
+            )
+
+            model.setVisualClickMode("permissive")
+            model.apply()
+            self.assertTrue(model.applying)
+
+            model.setMaxSteps(99)
+            worker.reconfigured.emit()
+
+            saved = store.load()
+            self.assertFalse(model.applying)
+            self.assertEqual(saved.visual_click_mode, "permissive")
+            self.assertEqual(saved.max_steps, 30)
+            self.assertEqual(model.maxSteps, 99)
+            self.assertTrue(model.dirty)
+            self.assertEqual(
+                model.applyStatus,
+                "Settings applied. Newer edits are still unsaved.",
+            )
+
+    def test_failed_apply_keeps_draft_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PorterSettingsStore(
+                QSettings(str(Path(tmp) / "porter.ini"), QSettings.IniFormat)
+            )
+            store.save(PorterAppSettings())
+            worker = DelayedWorker()
+            model = PorterSettingsModel(
+                worker,
+                store=store,
+                secrets=SecretStore(FakeKeyring()),
+                autostart=AutostartManager(
+                    ["/opt/porter/porter"],
+                    path=Path(tmp) / "autostart.desktop",
+                ),
+            )
+
+            model.setProvider("openrouter")
+            model.apply()
+            worker.reconfigureFailed.emit("provider unavailable")
+
+            self.assertFalse(model.applying)
+            self.assertTrue(model.dirty)
+            self.assertEqual(store.load().provider, "auto")
+            self.assertIn("provider unavailable", model.applyStatus)
 
     def test_finished_onboarding_stays_finished_without_live_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:

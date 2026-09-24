@@ -31,16 +31,16 @@ Item {
 
             AuroraButton {
                 text: "Revert"
-                visible: settingsModel.dirty
-                enabled: settingsModel.dirty
+                visible: settingsModel.dirty || settingsModel.applying
+                enabled: settingsModel.dirty && !settingsModel.applying
                 onClicked: settingsModel.revert()
             }
 
             AuroraButton {
-                text: "Apply"
-                visible: settingsModel.dirty
+                text: settingsModel.applying ? "Applying…" : "Apply"
+                visible: settingsModel.dirty || settingsModel.applying
                 primary: true
-                enabled: settingsModel.dirty
+                enabled: settingsModel.dirty && !settingsModel.applying
                 onClicked: settingsModel.apply()
             }
         }
@@ -79,7 +79,7 @@ Item {
                         }
                     }
 
-                    ComboBox {
+                    AuroraComboBox {
                         id: visualMode
                         Layout.preferredWidth: 170
                         model: ["Strict", "Permissive"]
@@ -117,7 +117,7 @@ Item {
                         }
                     }
 
-                    Switch {
+                    AuroraSwitch {
                         checked: settingsModel.allowForeground
                         onToggled: settingsModel.setAllowForeground(checked)
                     }
@@ -155,7 +155,7 @@ Item {
                         }
                     }
 
-                    Switch {
+                    AuroraSwitch {
                         checked: settingsModel.confirmActions
                         onToggled: settingsModel.setConfirmActions(checked)
                     }
@@ -222,7 +222,7 @@ Item {
                         }
                     }
 
-                    Switch {
+                    AuroraSwitch {
                         checked: settingsModel.startAtLogin
                         onToggled: settingsModel.setStartAtLogin(checked)
                     }
