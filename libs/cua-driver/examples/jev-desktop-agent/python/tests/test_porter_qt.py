@@ -25,6 +25,7 @@ class FakeWorker(QObject):
     runtimeFailed = Signal(str)
     commandFinished = Signal(str, str)
     commandFailed = Signal(str)
+    commandRejected = Signal(str)
     reconfigured = Signal()
     reconfigureFailed = Signal(str)
     shortcutStatusChanged = Signal(str)
@@ -35,6 +36,15 @@ class FakeWorker(QObject):
 
     def setListening(self, enabled):
         self.listening_requested = bool(enabled)
+
+    def cancel(self):
+        self.cancel_requested = getattr(self, "cancel_requested", 0) + 1
+
+    def startOneShotListening(self):
+        self.one_shot_started = getattr(self, "one_shot_started", 0) + 1
+
+    def cancelOneShotListening(self):
+        self.one_shot_cancelled = getattr(self, "one_shot_cancelled", 0) + 1
 
 
 class ControlledFuture:
@@ -95,6 +105,73 @@ class PorterQtTest(unittest.TestCase):
         self.assertTrue(model.listening)
         self.assertEqual(model.state, "ready")
         self.assertEqual(model.statusText, "Listening")
+
+    def test_cancel_current_sets_explicit_cancelling_state(self):
+        worker = FakeWorker()
+        model = PorterViewModel(worker)
+        model._on_runtime_event(RuntimeEvent("command_started", "Open Firefox"))
+
+        model.cancelCurrent()
+
+        self.assertTrue(model.cancelling)
+        self.assertEqual(model.statusText, "Stopping…")
+        self.assertEqual(worker.cancel_requested, 1)
+
+        model._on_runtime_event(
+            RuntimeEvent(
+                "command_completed",
+                "Command cancelled.",
+                data={"status": "cancelled"},
+            )
+        )
+        self.assertFalse(model.busy)
+        self.assertFalse(model.cancelling)
+        self.assertEqual(model.state, "ready")
+        self.assertEqual(model.statusText, "Ready")
+
+    def test_one_shot_voice_state_is_separate_from_hands_free(self):
+        worker = FakeWorker()
+        model = PorterViewModel(worker)
+
+        model._on_runtime_event(
+            RuntimeEvent(
+                "voice_once_started",
+                "Listening for one command.",
+                data={"mode": "one_shot"},
+            )
+        )
+        self.assertTrue(model.manualVoiceActive)
+        self.assertFalse(model.handsFreeActive)
+        self.assertEqual(model.voiceInputState, "waiting")
+
+        model._on_runtime_event(
+            RuntimeEvent(
+                "voice_speech_started",
+                "Listening…",
+                data={"mode": "one_shot"},
+            )
+        )
+        self.assertEqual(model.voiceInputState, "speech")
+
+        model._on_runtime_event(
+            RuntimeEvent(
+                "voice_transcribing",
+                "Transcribing…",
+                data={"mode": "one_shot"},
+            )
+        )
+        self.assertEqual(model.voiceInputState, "transcribing")
+
+        model._on_runtime_event(
+            RuntimeEvent(
+                "voice_once_cancelled",
+                "Voice recording cancelled.",
+                data={"mode": "one_shot"},
+            )
+        )
+        self.assertFalse(model.manualVoiceActive)
+        self.assertEqual(model.voiceInputState, "idle")
+        self.assertFalse(model.handsFreeActive)
 
     def test_structured_terminal_event_suppresses_duplicate_fallback(self):
         worker = PorterRuntimeThread(PorterRuntimeConfig())

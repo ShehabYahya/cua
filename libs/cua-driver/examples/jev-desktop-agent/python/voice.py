@@ -19,7 +19,13 @@ from openrouter_client import DEFAULT_STT_MODEL, OpenRouterClient
 class LocalSpeaker:
     def __init__(self, enabled: bool = False) -> None:
         self.enabled = enabled
-        self.binary = shutil.which("spd-say") or shutil.which("espeak-ng") or shutil.which("espeak")
+        self.binary = (
+            shutil.which("spd-say")
+            or shutil.which("espeak-ng")
+            or shutil.which("espeak")
+        )
+        self._process_lock = threading.Lock()
+        self._process: subprocess.Popen | None = None
 
     def show(self, text: str) -> None:
         print(f"[assistant] {text}", flush=True)
@@ -29,26 +35,78 @@ class LocalSpeaker:
         if not self.enabled or not self.binary or not text.strip():
             return
         try:
-            # Speech runs in a worker thread and is awaited, so TTS never blocks
-            # the asyncio event loop and is never left as fire-and-forget.
             await asyncio.to_thread(self._speak_sync, text)
         except Exception:
             pass
 
+    async def interrupt(self) -> None:
+        """Stop active local playback without disabling future TTS."""
+        await asyncio.to_thread(self._interrupt_sync)
+
+    async def wait_until_idle(self) -> None:
+        """Wait until the currently owned playback process has released."""
+        await asyncio.to_thread(self._wait_until_idle_sync)
+
+    def _interrupt_sync(self) -> None:
+        with self._process_lock:
+            process = self._process
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=1.0)
+        except Exception:
+            pass
+        finally:
+            with self._process_lock:
+                if self._process is process:
+                    self._process = None
+
+    def _wait_until_idle_sync(self) -> None:
+        with self._process_lock:
+            process = self._process
+        if process is None:
+            return
+        try:
+            process.wait(timeout=30.0)
+        except Exception:
+            pass
+
     def _speak_sync(self, text: str) -> None:
+        self._interrupt_sync()
         command = [self.binary]
         if self.binary.endswith("spd-say"):
-            # Without --wait spd-say returns before speech finishes, so awaiting
-            # the worker thread would not await speech completion.
             command.append("--wait")
         command.append(text[:1200])
-        subprocess.run(
+
+        process = subprocess.Popen(
             command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=30,
-            check=False,
         )
+        with self._process_lock:
+            self._process = process
+        try:
+            process.wait(timeout=30.0)
+        except subprocess.TimeoutExpired:
+            try:
+                process.terminate()
+                process.wait(timeout=1.0)
+            except Exception:
+                try:
+                    process.kill()
+                    process.wait(timeout=1.0)
+                except Exception:
+                    pass
+        finally:
+            with self._process_lock:
+                if self._process is process:
+                    self._process = None
 
 
 class Microphone:
