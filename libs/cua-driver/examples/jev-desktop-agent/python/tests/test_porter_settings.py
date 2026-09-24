@@ -69,6 +69,28 @@ class DelayedWorker(QObject):
 
 
 class PorterSettingsTest(unittest.TestCase):
+    def test_corrupt_numeric_and_color_settings_fall_back_safely(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qsettings = QSettings(
+                str(Path(tmp) / "porter.ini"),
+                QSettings.IniFormat,
+            )
+            qsettings.setValue("voice/silence", "not-a-number")
+            qsettings.setValue("appearance/accent_color", "not-a-color")
+            qsettings.setValue("appearance/compact_idle_opacity", -5)
+            qsettings.setValue("appearance/compact_hover_opacity", "nan")
+            qsettings.setValue("advanced/max_steps", 9999)
+            qsettings.setValue("advanced/max_candidates", "broken")
+
+            actual = PorterSettingsStore(qsettings).load()
+
+            self.assertAlmostEqual(actual.voice_silence, 0.55)
+            self.assertEqual(actual.accent_color, "#49A7FF")
+            self.assertAlmostEqual(actual.compact_idle_opacity, 0.08)
+            self.assertAlmostEqual(actual.compact_hover_opacity, 0.72)
+            self.assertEqual(actual.max_steps, 200)
+            self.assertEqual(actual.max_candidates, 32)
+
     def test_qsettings_round_trip_keeps_runtime_choices(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "porter.ini"

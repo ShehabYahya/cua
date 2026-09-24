@@ -5,11 +5,17 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from porter_voice import HandsFreeVoiceConfig, HandsFreeVoiceService
+from porter_voice import (
+    HandsFreeVoiceConfig,
+    HandsFreeVoiceService,
+    VoiceCaptureEngine,
+)
+from voice import LocalSpeaker
 
 
 class FakeMicrophone:
@@ -48,12 +54,19 @@ class FakeClient:
         return self.transcript
 
 
+class FailingClient:
+    def transcribe_wav(self, wav, *, model, language):
+        raise TimeoutError("temporary timeout")
+
+
 class FakeRuntime:
     def __init__(self, *, busy: bool = False) -> None:
         self._busy = busy
+        self.tts_pause_event = threading.Event()
         self.events = []
         self.submitted = []
         self.cancelled = 0
+        self.tts_pause_event = threading.Event()
 
     @property
     def busy(self) -> bool:
@@ -83,6 +96,88 @@ class FakeRuntime:
 
 
 class PorterVoiceTest(unittest.TestCase):
+
+    def test_local_speaker_interrupt_is_idempotent(self):
+        class FakeProcess:
+            def __init__(self):
+                self.terminated = 0
+                self.waited = 0
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated += 1
+
+            def kill(self):
+                raise AssertionError("kill should not be needed")
+
+            def wait(self, timeout=None):
+                self.waited += 1
+                return 0
+
+        speaker = LocalSpeaker(enabled=True)
+        process = FakeProcess()
+        speaker._process = process
+
+        speaker._interrupt_sync()
+        speaker._interrupt_sync()
+
+        self.assertEqual(process.terminated, 1)
+        self.assertGreaterEqual(process.waited, 1)
+        self.assertIsNone(speaker._process)
+
+    def test_local_speaker_uses_configured_tts_api_and_pauses_capture(self):
+        pause_event = threading.Event()
+        speaker = LocalSpeaker(
+            enabled=True,
+            api_base="http://127.0.0.1:9393/v1/",
+            model="local-tts",
+            voice="Vivian",
+            language="English",
+            instructions="Speak clearly.",
+            pause_event=pause_event,
+        )
+        response = Mock()
+        response.content = b"wav-data"
+        process = Mock()
+
+        def post(url, **kwargs):
+            self.assertEqual(url, "http://127.0.0.1:9393/v1/audio/speech")
+            self.assertTrue(pause_event.is_set())
+            return response
+
+        def popen(command, **kwargs):
+            self.assertTrue(pause_event.is_set())
+            self.assertEqual(command[0], "/usr/bin/aplay")
+            return process
+
+        with (
+            patch("httpx.post", side_effect=post) as http_post,
+            patch(
+                "voice.shutil.which",
+                side_effect=lambda name: "/usr/bin/aplay" if name == "aplay" else None,
+            ),
+            patch("voice.subprocess.Popen", side_effect=popen),
+        ):
+            asyncio.run(speaker.say("Hello from Porter"))
+
+        response.raise_for_status.assert_called_once_with()
+        http_post.assert_called_once_with(
+            "http://127.0.0.1:9393/v1/audio/speech",
+            json={
+                "model": "local-tts",
+                "input": "Hello from Porter",
+                "voice": "Vivian",
+                "language": "English",
+                "response_format": "wav",
+                "instructions": "Speak clearly.",
+            },
+            timeout=360,
+        )
+        process.wait.assert_called_once_with(timeout=360.0)
+        self.assertFalse(pause_event.is_set())
+
     def test_speech_is_detected_transcribed_and_submitted_without_button(self):
         runtime = FakeRuntime()
         client = FakeClient("Open Firefox")
@@ -141,6 +236,83 @@ class PorterVoiceTest(unittest.TestCase):
 
         kinds = [kind for kind, _, _ in runtime.events]
         self.assertIn("voice_cancel_requested", kinds)
+
+    def test_transcription_failure_is_recoverable_and_keeps_listening(self):
+        runtime = FakeRuntime()
+
+        async def scenario():
+            service = HandsFreeVoiceService(
+                runtime,
+                FailingClient(),
+                microphone_factory=FakeMicrophone,
+            )
+            await service.start()
+            for _ in range(100):
+                if any(
+                    kind == "voice_transcription_failed"
+                    for kind, _, _ in runtime.events
+                ):
+                    break
+                await asyncio.sleep(0.01)
+
+            self.assertTrue(service.running)
+            await service.stop()
+
+        asyncio.run(scenario())
+
+        kinds = [kind for kind, _, _ in runtime.events]
+        self.assertIn("voice_transcription_failed", kinds)
+        self.assertNotIn("voice_error", kinds)
+
+    def test_shared_capture_engine_records_one_utterance(self):
+        runtime = FakeRuntime()
+        client = FakeClient("Open Settings")
+        engine = VoiceCaptureEngine(
+            runtime,
+            client,
+            HandsFreeVoiceConfig(enabled=False),
+            microphone_factory=FakeMicrophone,
+        )
+
+        async def scenario():
+            stop = threading.Event()
+            result = await engine.capture_once(
+                stop_event=stop,
+                mode="one_shot",
+            )
+            self.assertIsNotNone(result)
+            self.assertEqual(result.transcript, "Open Settings")
+
+        asyncio.run(scenario())
+
+        self.assertEqual(client.calls, 1)
+        levels = [
+            event for event in runtime.events if event[0] == "voice_level"
+        ]
+        self.assertEqual(len(levels), 1)
+        self.assertEqual(levels[0][2]["mode"], "one_shot")
+
+    def test_cancelled_one_shot_discards_capture_before_stt(self):
+        runtime = FakeRuntime()
+        client = FakeClient("should not submit")
+        engine = VoiceCaptureEngine(
+            runtime,
+            client,
+            HandsFreeVoiceConfig(enabled=False),
+            microphone_factory=FakeMicrophone,
+        )
+
+        async def scenario():
+            stop = threading.Event()
+            stop.set()
+            result = await engine.capture_once(
+                stop_event=stop,
+                mode="one_shot",
+            )
+            self.assertIsNone(result)
+
+        asyncio.run(scenario())
+        self.assertEqual(client.calls, 0)
 
 
 if __name__ == "__main__":

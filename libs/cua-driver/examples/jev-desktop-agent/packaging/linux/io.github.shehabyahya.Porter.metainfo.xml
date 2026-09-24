@@ -25,6 +25,15 @@
   </categories>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.1.1" date="2026-09-22">
+      <description>
+        <p>
+          Porter can speak its replies through a local text-to-speech endpoint,
+          pauses the microphone while speaking, and exposes speech enable,
+          model, voice, and language controls in Voice &amp; Audio settings.
+        </p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-09-20">
       <description>
         <p>

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="${1:-0.1.0}"
+VERSION="${1:-0.1.1}"
 ARCH="${PORTER_DEB_ARCH:-$(dpkg --print-architecture)}"
 BUILD="$ROOT/build/porter-deb"
 BINARY_DIR="$BUILD/binary"

@@ -3,9 +3,13 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "../components"
 
-Item {
+ScrollView {
+    id: pageScroll
+    clip: true
+    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
     ColumnLayout {
-        anchors.fill: parent
+        width: pageScroll.availableWidth
         spacing: 20
 
         Text {
@@ -59,9 +63,20 @@ Item {
                     }
 
                     AuroraButton {
-                        text: porter.listening ? "Mute" : "Enable"
-                        primary: !porter.listening
+                        text: porter.handsFreeActive ? "Mute" : "Enable"
+                        primary: !porter.handsFreeActive
+                        enabled: !porter.manualVoiceActive && !porter.busy
                         onClicked: porter.toggleListening()
+                    }
+
+                    AuroraButton {
+                        visible: !porter.handsFreeActive
+                        text: porter.manualVoiceActive
+                            ? "Cancel recording"
+                            : "Speak once"
+                        primary: porter.manualVoiceActive
+                        enabled: !porter.busy && !porter.cancelling
+                        onClicked: porter.toggleOneShotListening()
                     }
                 }
 
@@ -84,11 +99,17 @@ Item {
                 }
 
                 Text {
-                    text: porter.state === "listening"
-                        ? "Speech detected"
-                        : porter.listening
-                            ? "Waiting for speech"
-                            : "Microphone muted"
+                    text: porter.manualVoiceActive
+                        ? porter.voiceInputState === "transcribing"
+                            ? "Transcribing one command"
+                            : porter.voiceInputState === "speech"
+                                ? "Speech detected"
+                                : "Waiting for speech"
+                        : porter.state === "listening"
+                            ? "Speech detected"
+                            : porter.handsFreeActive
+                                ? "Waiting for speech"
+                                : "Microphone muted"
                     color: porter.state === "listening" ? "#63C7FF" : "#69819E"
                     font.pixelSize: 12
                 }
@@ -164,7 +185,7 @@ Item {
 
         AuroraCard {
             Layout.fillWidth: true
-            Layout.fillHeight: true
+            Layout.preferredHeight: 430
             glassOpacity: 0.46
 
             ColumnLayout {
@@ -197,6 +218,78 @@ Item {
                         primary: true
                         enabled: settingsModel.dirty && !settingsModel.applying
                         onClicked: settingsModel.apply()
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+
+                        Text {
+                            text: "Speak Porter replies"
+                            color: "#D6E7FA"
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                        }
+
+                        Text {
+                            text: "CPU speech through shehab-local; the microphone pauses during playback."
+                            color: "#7188A7"
+                            font.pixelSize: 11
+                        }
+                    }
+
+                    AuroraSwitch {
+                        checked: settingsModel.ttsEnabled
+                        onToggled: settingsModel.setTtsEnabled(checked)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        Text { text: "TTS model"; color: "#7188A7"; font.pixelSize: 11 }
+                        TextField {
+                            Layout.fillWidth: true
+                            text: settingsModel.ttsModel
+                            color: "#E9F4FF"
+                            onEditingFinished: settingsModel.setTtsModel(text)
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.preferredWidth: 160
+                        spacing: 4
+
+                        Text { text: "Voice"; color: "#7188A7"; font.pixelSize: 11 }
+                        TextField {
+                            Layout.fillWidth: true
+                            text: settingsModel.ttsVoice
+                            color: "#E9F4FF"
+                            onEditingFinished: settingsModel.setTtsVoice(text)
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    Text { text: "Speech language"; color: "#7188A7"; font.pixelSize: 11 }
+                    TextField {
+                        Layout.fillWidth: true
+                        text: settingsModel.ttsLanguage
+                        placeholderText: "English"
+                        color: "#E9F4FF"
+                        onEditingFinished: settingsModel.setTtsLanguage(text)
                     }
                 }
 

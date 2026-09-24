@@ -157,6 +157,26 @@ def _toggle_window(window) -> None:
         _show_window(window)
 
 
+def _sync_tray_actions(porter, stop_action, listen_action) -> None:
+    stop_action.setText(
+        "Stopping current task…"
+        if porter.cancelling
+        else "Stop current task"
+    )
+    stop_action.setEnabled(porter.busy and not porter.cancelling)
+
+    listen_action.blockSignals(True)
+    try:
+        listen_action.setChecked(porter.handsFreeActive)
+        listen_action.setEnabled(
+            not porter.manualVoiceActive
+            and not porter.busy
+            and not porter.cancelling
+        )
+    finally:
+        listen_action.blockSignals(False)
+
+
 def _clamp_window_position(
     x: int,
     y: int,
@@ -374,11 +394,15 @@ def main() -> int:
         menu = QMenu()
         open_action = QAction("Open Porter", menu)
         quick_action = QAction("Show Quick Bar", menu)
+        stop_action = QAction("Stop current task", menu)
+        stop_action.setEnabled(False)
         listen_action = QAction("Hands-free listening", menu)
         listen_action.setCheckable(True)
         listen_action.setChecked(False)
         menu.addAction(open_action)
         menu.addAction(quick_action)
+        menu.addAction(stop_action)
+        menu.addSeparator()
         menu.addAction(listen_action)
         menu.addSeparator()
         quit_action = QAction("Quit Porter", menu)
@@ -390,19 +414,26 @@ def main() -> int:
         quick_action.triggered.connect(
             lambda: _toggle_window(compact_window)
         )
+        stop_action.triggered.connect(porter.cancelCurrent)
+
+        def sync_tray_actions() -> None:
+            _sync_tray_actions(
+                porter,
+                stop_action,
+                listen_action,
+            )
+
+        porter.busyChanged.connect(sync_tray_actions)
+        porter.cancellingChanged.connect(sync_tray_actions)
+        porter.listeningChanged.connect(sync_tray_actions)
+        porter.manualVoiceActiveChanged.connect(sync_tray_actions)
+        sync_tray_actions()
 
         def tray_listen_toggled(enabled: bool) -> None:
-            if enabled != porter.listening:
+            if enabled != porter.handsFreeActive:
                 porter.setListening(enabled)
 
         listen_action.toggled.connect(tray_listen_toggled)
-
-        def sync_listening_action() -> None:
-            listen_action.blockSignals(True)
-            listen_action.setChecked(porter.listening)
-            listen_action.blockSignals(False)
-
-        porter.listeningChanged.connect(sync_listening_action)
         quit_action.triggered.connect(app.quit)
         porter.quitRequested.connect(app.quit)
 

@@ -5,6 +5,7 @@ import contextlib
 import os
 import platform
 import sys
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,11 @@ from openrouter_client import (
 )
 from perception import NoopPerceiver, OpenRouterVisionPerceiver
 from voice import VoiceAssistant
-from porter_voice import HandsFreeVoiceConfig, HandsFreeVoiceService
+from porter_voice import (
+    HandsFreeVoiceConfig,
+    HandsFreeVoiceService,
+    VoiceCaptureEngine,
+)
 from writer import OpenRouterWriter
 from telemetry import Telemetry, TelemetryConfig
 from telemetry_agent import TelemetryAgentLoop
@@ -43,6 +48,12 @@ class PorterRuntimeConfig:
     enforce_policy: bool = False
     allow_foreground: bool = True
     visual_click_mode: str = "strict"
+    tts_enabled: bool = True
+    tts_api_base: str = "http://127.0.0.1:9393/v1"
+    tts_model: str = "qwen3-tts-1.7b-customvoice"
+    tts_voice: str = "Vivian"
+    tts_language: str = "English"
+    tts_instructions: str = ""
     telemetry: TelemetryConfig | None = None
 
     def resolved_download_root(self) -> str | None:
@@ -50,6 +61,10 @@ class PorterRuntimeConfig:
             return str(Path(self.download_root).expanduser())
         default = Path.home() / "Downloads"
         return str(default) if default.is_dir() else None
+
+
+class PorterBusyError(RuntimeError):
+    """Raised when a command or exclusive voice action is already active."""
 
 
 class PorterRuntime:
@@ -86,10 +101,16 @@ class PorterRuntime:
         self._openrouter: OpenRouterClient | None = None
         self._agent: AgentLoop | None = None
         self._voice_service: HandsFreeVoiceService | None = None
+        self._tts_pause = threading.Event()
+        self._speaker = None
+        self._one_shot_voice_task: asyncio.Task | None = None
+        self._one_shot_stop_event = None
+        self._voice_config = HandsFreeVoiceConfig()
 
         self._command_lock = asyncio.Lock()
         self._cancel_event: asyncio.Event | None = None
         self._active_command_id: str | None = None
+        self._cancelling = False
         self._started = False
         self._telemetry = Telemetry()
 
@@ -106,11 +127,23 @@ class PorterRuntime:
 
     @property
     def busy(self) -> bool:
-        return self._command_lock.locked()
+        return (
+            self._active_command_id is not None
+            or self._command_lock.locked()
+        )
 
     @property
     def active_command_id(self) -> str | None:
         return self._active_command_id
+
+    @property
+    def cancelling(self) -> bool:
+        return self._cancelling
+
+    @property
+    def one_shot_voice_active(self) -> bool:
+        task = self._one_shot_voice_task
+        return bool(task is not None and not task.done())
 
     @property
     def agent(self) -> AgentLoop:
@@ -185,6 +218,14 @@ class PorterRuntime:
         stack = contextlib.AsyncExitStack()
         await stack.__aenter__()
         try:
+            from voice import LocalSpeaker
+            self._speaker = LocalSpeaker(
+                self.config.tts_enabled, api_base=self.config.tts_api_base,
+                model=self.config.tts_model, voice=self.config.tts_voice,
+                language=self.config.tts_language,
+                instructions=self.config.tts_instructions,
+                pause_event=self._tts_pause,
+            )
             chooser = self._chooser_factory(
                 self.config.provider,
                 model=self.config.jev_model,
@@ -271,8 +312,9 @@ class PorterRuntime:
             return
         self._emit("runtime_stopping", "Stopping Porter runtime…")
 
-        await self.stop_hands_free()
         self.cancel()
+        await self.cancel_listen_once()
+        await self.stop_hands_free()
 
         if self._command_lock.locked():
             async def wait_until_idle() -> None:
@@ -296,6 +338,7 @@ class PorterRuntime:
         self._started = False
         self._active_command_id = None
         self._cancel_event = None
+        self._cancelling = False
         if stack is not None:
             await stack.aclose()
         self._emit("runtime_stopped", "Porter stopped.")
@@ -317,63 +360,113 @@ class PorterRuntime:
         command = goal.strip()
         if not command:
             raise ValueError("goal must not be empty")
+        if (
+            self._command_lock.locked()
+            or self._active_command_id is not None
+            or self._cancelling
+        ):
+            raise PorterBusyError("Porter is already working.")
 
-        async with self._command_lock:
-            command_id = uuid.uuid4().hex
-            cancel_event = asyncio.Event()
-            self._active_command_id = command_id
-            self._cancel_event = cancel_event
-            self._capture("begin_command", command_id, command,
-                          source=input_source, utterance_id=utterance_id)
-            terminal_status = "failed"
-            self._emit(
-                "command_started",
+        command_id = uuid.uuid4().hex
+        cancel_event = asyncio.Event()
+        terminal_kind = "command_failed"
+        terminal_message = ""
+        terminal_data: dict[str, Any] = {}
+        result: RunResult | None = None
+        raised: BaseException | None = None
+
+        # Reserve ownership before the first await. On the single runtime
+        # event loop this makes concurrent submit() calls fail immediately
+        # rather than waiting behind the command lock.
+        self._active_command_id = command_id
+        self._cancel_event = cancel_event
+        self._cancelling = False
+        try:
+            await self._command_lock.acquire()
+        except BaseException:
+            self._active_command_id = None
+            self._cancel_event = None
+            self._cancelling = False
+            raise
+        self._capture(
+            "begin_command",
+            command_id,
+            command,
+            source=input_source,
+            utterance_id=utterance_id,
+        )
+        self._emit(
+            "command_started",
+            command,
+            command_id=command_id,
+            goal=command,
+            app=app,
+        )
+        try:
+            result = await self._agent.run(
                 command,
-                command_id=command_id,
-                goal=command,
                 app=app,
+                act=act,
+                approve_consequential=approve_consequential,
+                allow_foreground=(
+                    self.config.allow_foreground
+                    if allow_foreground is None
+                    else bool(allow_foreground)
+                ),
+                confirm=confirm,
+                cancel_event=cancel_event,
             )
-            try:
-                result = await self._agent.run(
-                    command,
-                    app=app,
-                    act=act,
-                    approve_consequential=approve_consequential,
-                    allow_foreground=(
-                        self.config.allow_foreground
-                        if allow_foreground is None
-                        else bool(allow_foreground)
-                    ),
-                    confirm=confirm,
-                    cancel_event=cancel_event,
+            if cancel_event.is_set():
+                terminal_kind = "command_completed"
+                terminal_message = "Command cancelled."
+                terminal_data = {"status": "cancelled"}
+                result = RunResult(
+                    "cancelled",
+                    result.steps,
+                    terminal_message,
+                    result.plan,
+                    result.completed_subgoals,
                 )
-            except asyncio.CancelledError:
-                terminal_status = "cancelled"
-                raise
-            except Exception as error:
-                self._emit(
-                    "command_failed",
-                    str(error),
-                    command_id=command_id,
-                    error_type=type(error).__name__,
-                )
-                raise
             else:
-                terminal_status = result.status
-                self._emit(
-                    "command_completed",
-                    result.message,
-                    command_id=command_id,
-                    status=result.status,
-                    executed_steps=sum(
+                if self._speaker is not None and self.config.tts_enabled:
+                    await self._speaker.say(result.message)
+                terminal_kind = "command_completed"
+                terminal_message = result.message
+                terminal_data = {
+                    "status": result.status,
+                    "executed_steps": sum(
                         1 for step in result.steps if step.executed
                     ),
-                )
-                return result
-            finally:
-                self._capture("end_command", terminal_status)
-                self._active_command_id = None
-                self._cancel_event = None
+                }
+        except asyncio.CancelledError as error:
+            terminal_kind = "command_completed"
+            terminal_message = "Command cancelled."
+            terminal_data = {"status": "cancelled"}
+            raised = error
+        except Exception as error:
+            terminal_kind = "command_failed"
+            terminal_message = str(error)
+            terminal_data = {"error_type": type(error).__name__}
+            raised = error
+        finally:
+            status = str(terminal_data.get("status") or "failed")
+            self._capture("end_command", status)
+            self._active_command_id = None
+            self._cancel_event = None
+            self._cancelling = False
+            if self._command_lock.locked():
+                self._command_lock.release()
+
+        self._emit(
+            terminal_kind,
+            terminal_message,
+            command_id=command_id,
+            **terminal_data,
+        )
+        if raised is not None:
+            raise raised
+        assert result is not None
+        return result
 
     def capture_voice_timing(self, utterance_id: str, elapsed_ms: float, **metadata: Any) -> None:
         """Content-free STT timing hook; transcript/audio must never be passed here."""
@@ -382,9 +475,12 @@ class PorterRuntime:
     def cancel(self) -> bool:
         event = self._cancel_event
         command_id = self._active_command_id
-        if event is None or event.is_set():
+        if event is None or event.is_set() or command_id is None:
             return False
+        self._cancelling = True
         event.set()
+        if self._speaker is not None:
+            self._speaker.interrupt_now()
         self._capture("cancel_requested")
         self._emit(
             "command_cancel_requested",
@@ -397,6 +493,10 @@ class PorterRuntime:
     def hands_free_enabled(self) -> bool:
         service = self._voice_service
         return bool(service is not None and service.running)
+
+    @property
+    def tts_pause_event(self) -> threading.Event:
+        return self._tts_pause
 
     async def start_hands_free(
         self,
@@ -414,10 +514,15 @@ class PorterRuntime:
             return False
         if self.hands_free_enabled:
             return True
+        if self.one_shot_voice_active:
+            raise PorterBusyError(
+                "Finish or cancel the current voice recording first."
+            )
+        self._voice_config = config or HandsFreeVoiceConfig()
         service = HandsFreeVoiceService(
             self,
             self._openrouter,
-            config or HandsFreeVoiceConfig(),
+            self._voice_config,
         )
         self._voice_service = service
         try:
@@ -443,6 +548,130 @@ class PorterRuntime:
             return await self.start_hands_free(config)
         await self.stop_hands_free()
         return False
+
+    async def listen_once(
+        self,
+        config: HandsFreeVoiceConfig | None = None,
+    ) -> str | None:
+        if not self._started:
+            raise RuntimeError("PorterRuntime must be started before voice")
+        if self._openrouter is None:
+            self._emit(
+                "voice_unavailable",
+                "Voice input requires an OpenRouter API key for transcription.",
+                mode="one_shot",
+            )
+            return None
+        if self.busy or self.cancelling:
+            raise PorterBusyError("Porter is already working.")
+        if self.hands_free_enabled:
+            raise PorterBusyError(
+                "Disable hands-free listening before using Speak once."
+            )
+        if self.one_shot_voice_active:
+            raise PorterBusyError("A voice recording is already active.")
+
+        selected = config or self._voice_config
+        stop_event = threading.Event()
+        self._one_shot_stop_event = stop_event
+        self._voice_config = selected
+
+        async def capture_and_submit() -> str | None:
+            self._emit(
+                "voice_once_started",
+                "Listening for one command.",
+                mode="one_shot",
+            )
+            try:
+                engine = VoiceCaptureEngine(
+                    self,
+                    self._openrouter,
+                    selected,
+                    pause_event=self.tts_pause_event,
+                )
+                captured = await engine.capture_once(
+                    stop_event=stop_event,
+                    mode="one_shot",
+                )
+                if stop_event.is_set():
+                    self._emit(
+                        "voice_once_cancelled",
+                        "Voice recording cancelled.",
+                        mode="one_shot",
+                    )
+                    return None
+                if captured is None:
+                    status = getattr(engine, "last_status", "no_speech")
+                    if status in {"error", "transcription_failed"}:
+                        self._emit(
+                            "voice_once_finished",
+                            "Voice input failed.",
+                            mode="one_shot",
+                            status="failed",
+                        )
+                    else:
+                        self._emit(
+                            "voice_once_finished",
+                            "No speech detected.",
+                            mode="one_shot",
+                            status="no_speech",
+                        )
+                    return None
+
+                transcript = captured.transcript
+                self._emit(
+                    "voice_once_finished",
+                    transcript,
+                    mode="one_shot",
+                    status="transcribed",
+                )
+                try:
+                    await self.submit(
+                        transcript,
+                        act=True,
+                        input_source="voice",
+                        utterance_id=captured.utterance_id,
+                    )
+                except PorterBusyError:
+                    self._emit(
+                        "voice_ignored_busy",
+                        "Porter is already working.",
+                        transcript=transcript,
+                        mode="one_shot",
+                    )
+                    return None
+                return transcript
+            finally:
+                self._one_shot_stop_event = None
+
+        task = asyncio.create_task(
+            capture_and_submit(),
+            name="porter-one-shot-voice",
+        )
+        self._one_shot_voice_task = task
+        try:
+            return await task
+        finally:
+            if self._one_shot_voice_task is task:
+                self._one_shot_voice_task = None
+
+    async def cancel_listen_once(self) -> bool:
+        stop_event = self._one_shot_stop_event
+        task = self._one_shot_voice_task
+        if stop_event is None and (task is None or task.done()):
+            return False
+        if stop_event is not None:
+            stop_event.set()
+        if task is not None and task is not asyncio.current_task():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=2.0,
+                )
+            except asyncio.TimeoutError:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        return True
 
     def create_voice_assistant(
         self,
@@ -493,6 +722,8 @@ class PorterRuntime:
             "jev_model": self.config.jev_model,
             "vision_enabled": self.config.vision_enabled,
             "hands_free": self.hands_free_enabled,
+            "one_shot_voice": self.one_shot_voice_active,
+            "cancelling": self.cancelling,
             "visual_click_mode": self.config.visual_click_mode,
             "policy_enabled": self.config.enforce_policy,
             "allow_foreground": self.config.allow_foreground,

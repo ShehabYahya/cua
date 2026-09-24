@@ -8,6 +8,7 @@ Item {
     anchors.fill: parent
     visible: settingsModel.needsOnboarding
     z: 1000
+    readonly property bool compactLayout: height < 700
 
     Dialog {
         id: installDriverDialog
@@ -34,15 +35,15 @@ Item {
     }
 
     AuroraCard {
-        width: Math.min(parent.width - 80, 720)
-        height: Math.min(parent.height - 80, 610)
+        width: Math.min(parent.width - (root.compactLayout ? 32 : 80), 720)
+        height: Math.min(parent.height - (root.compactLayout ? 32 : 80), 610)
         anchors.centerIn: parent
         glassOpacity: 0.96
 
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 30
-            spacing: 18
+            anchors.margins: root.compactLayout ? 20 : 30
+            spacing: root.compactLayout ? 10 : 18
 
             RowLayout {
                 Layout.fillWidth: true
@@ -76,7 +77,7 @@ Item {
 
             AuroraCard {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 215
+                Layout.preferredHeight: root.compactLayout ? 180 : 215
                 glassOpacity: 0.58
 
                 ColumnLayout {
@@ -126,7 +127,7 @@ Item {
 
             AuroraCard {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 170
+                Layout.preferredHeight: root.compactLayout ? 150 : 170
                 glassOpacity: 0.52
 
                 ColumnLayout {
@@ -237,8 +238,6 @@ Item {
 
                 Item { Layout.fillWidth: true }
             }
-
-            Item { Layout.fillHeight: true }
 
             RowLayout {
                 Layout.fillWidth: true
