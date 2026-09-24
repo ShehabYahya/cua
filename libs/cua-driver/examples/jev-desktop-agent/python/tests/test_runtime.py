@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from contracts import DesktopOverview, Plan, PlanStep
 from events import RuntimeEvent, RuntimeEventBus
 from loop import RunResult
-from runtime import PorterRuntime, PorterRuntimeConfig
+from runtime import PorterBusyError, PorterRuntime, PorterRuntimeConfig
 
 
 class FakeChooser:
@@ -84,6 +84,27 @@ class FakeAgent:
 class CancelledAgent(FakeAgent):
     async def run(self, goal, **kwargs):
         raise asyncio.CancelledError()
+
+
+class BlockingAgent(FakeAgent):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run(self, goal, **kwargs):
+        self.calls.append((goal, kwargs))
+        self.started.set()
+        await self.release.wait()
+        cancel_event = kwargs.get("cancel_event")
+        status = "cancelled" if cancel_event is not None and cancel_event.is_set() else "completed"
+        return RunResult(
+            status,
+            (),
+            "Command cancelled." if status == "cancelled" else "done",
+            Plan(goal, (PlanStep(goal=goal, completion=goal),)),
+            0 if status == "cancelled" else 1,
+        )
 
 
 class RuntimeTest(unittest.TestCase):
@@ -210,6 +231,90 @@ class RuntimeTest(unittest.TestCase):
         )
         self.assertIsNotNone(started.command_id)
         self.assertEqual(started.command_id, completed.command_id)
+
+    def test_submit_rejects_instead_of_queueing(self):
+        events = []
+        agents = []
+
+        def agent_factory(*args, **kwargs):
+            agent = BlockingAgent(*args, **kwargs)
+            agents.append(agent)
+            return agent
+
+        async def scenario():
+            runtime = PorterRuntime(
+                PorterRuntimeConfig(provider="typesafe", vision_enabled=False),
+                event_sink=events.append,
+                chooser_factory=lambda provider, model=None: FakeChooser(),
+                driver_factory=FakeDriver,
+                agent_factory=agent_factory,
+            )
+            await runtime.start()
+            first = asyncio.create_task(runtime.submit("First"))
+            await agents[0].started.wait()
+            with self.assertRaises(PorterBusyError):
+                await runtime.submit("Second")
+            agents[0].release.set()
+            await first
+            self.assertEqual(len(agents[0].calls), 1)
+            await runtime.stop()
+
+        with patch.dict(
+            "os.environ",
+            {"TYPESAFE_API_KEY": "test", "OPENROUTER_API_KEY": ""},
+            clear=False,
+        ):
+            asyncio.run(scenario())
+
+    def test_cancelled_terminal_event_observes_cleared_runtime_state(self):
+        snapshot = {}
+
+        async def scenario():
+            runtime = None
+
+            def sink(event):
+                if (
+                    event.kind == "command_completed"
+                    and event.data.get("status") == "cancelled"
+                ):
+                    snapshot["busy"] = runtime.busy
+                    snapshot["cancelling"] = runtime.cancelling
+                    snapshot["active_command_id"] = runtime.active_command_id
+
+            agent = BlockingAgent()
+            runtime = PorterRuntime(
+                PorterRuntimeConfig(provider="typesafe", vision_enabled=False),
+                event_sink=sink,
+                chooser_factory=lambda provider, model=None: FakeChooser(),
+                driver_factory=FakeDriver,
+                agent_factory=lambda *args, **kwargs: agent,
+            )
+            await runtime.start()
+            task = asyncio.create_task(runtime.submit("First"))
+            await agent.started.wait()
+            self.assertTrue(runtime.cancel())
+            self.assertTrue(runtime.cancelling)
+            self.assertFalse(runtime.cancel())
+            agent.release.set()
+            result = await task
+            self.assertEqual(result.status, "cancelled")
+            await runtime.stop()
+
+        with patch.dict(
+            "os.environ",
+            {"TYPESAFE_API_KEY": "test", "OPENROUTER_API_KEY": ""},
+            clear=False,
+        ):
+            asyncio.run(scenario())
+
+        self.assertEqual(
+            snapshot,
+            {
+                "busy": False,
+                "cancelling": False,
+                "active_command_id": None,
+            },
+        )
 
     def test_cancelled_coroutine_emits_terminal_cancelled_event(self):
         events = []
