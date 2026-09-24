@@ -78,6 +78,13 @@ jobs:
           test -f screenshots/12-compact-listening.png
           test -f screenshots/13-compact-working.png
           test -f screenshots/14-compact-error.png
+          test -f screenshots/15-compact-cancelling.png
+          test -f screenshots/16-compact-one-shot-listening.png
+          test -f screenshots/17-home-working-stop.png
+          test -f screenshots/18-home-one-shot-listening.png
+          test -f screenshots/19-voice-one-shot.png
+          test -f screenshots/minimum-window/17-home-working-stop.png
+          test -f screenshots/minimum-window/18-home-one-shot-listening.png
           test -f screenshots/minimum-window/01-home.png
           test -f screenshots/minimum-window/09-about-updates.png
 

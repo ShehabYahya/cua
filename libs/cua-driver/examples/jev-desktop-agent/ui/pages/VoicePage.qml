@@ -63,9 +63,20 @@ ScrollView {
                     }
 
                     AuroraButton {
-                        text: porter.listening ? "Mute" : "Enable"
-                        primary: !porter.listening
+                        text: porter.handsFreeActive ? "Mute" : "Enable"
+                        primary: !porter.handsFreeActive
+                        enabled: !porter.manualVoiceActive && !porter.busy
                         onClicked: porter.toggleListening()
+                    }
+
+                    AuroraButton {
+                        visible: !porter.handsFreeActive
+                        text: porter.manualVoiceActive
+                            ? "Cancel recording"
+                            : "Speak once"
+                        primary: porter.manualVoiceActive
+                        enabled: !porter.busy && !porter.cancelling
+                        onClicked: porter.toggleOneShotListening()
                     }
                 }
 
@@ -88,11 +99,17 @@ ScrollView {
                 }
 
                 Text {
-                    text: porter.state === "listening"
-                        ? "Speech detected"
-                        : porter.listening
-                            ? "Waiting for speech"
-                            : "Microphone muted"
+                    text: porter.manualVoiceActive
+                        ? porter.voiceInputState === "transcribing"
+                            ? "Transcribing one command"
+                            : porter.voiceInputState === "speech"
+                                ? "Speech detected"
+                                : "Waiting for speech"
+                        : porter.state === "listening"
+                            ? "Speech detected"
+                            : porter.handsFreeActive
+                                ? "Waiting for speech"
+                                : "Microphone muted"
                     color: porter.state === "listening" ? "#63C7FF" : "#69819E"
                     font.pixelSize: 12
                 }
