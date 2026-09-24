@@ -576,12 +576,21 @@ class PorterRuntime:
                     )
                     return None
                 if captured is None:
-                    self._emit(
-                        "voice_once_finished",
-                        "No speech detected.",
-                        mode="one_shot",
-                        status="no_speech",
-                    )
+                    status = getattr(engine, "last_status", "no_speech")
+                    if status in {"error", "transcription_failed"}:
+                        self._emit(
+                            "voice_once_finished",
+                            "Voice input failed.",
+                            mode="one_shot",
+                            status="failed",
+                        )
+                    else:
+                        self._emit(
+                            "voice_once_finished",
+                            "No speech detected.",
+                            mode="one_shot",
+                            status="no_speech",
+                        )
                     return None
 
                 transcript = captured.transcript
