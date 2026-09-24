@@ -374,11 +374,15 @@ def main() -> int:
         menu = QMenu()
         open_action = QAction("Open Porter", menu)
         quick_action = QAction("Show Quick Bar", menu)
+        stop_action = QAction("Stop current task", menu)
+        stop_action.setEnabled(False)
         listen_action = QAction("Hands-free listening", menu)
         listen_action.setCheckable(True)
         listen_action.setChecked(False)
         menu.addAction(open_action)
         menu.addAction(quick_action)
+        menu.addAction(stop_action)
+        menu.addSeparator()
         menu.addAction(listen_action)
         menu.addSeparator()
         quit_action = QAction("Quit Porter", menu)
@@ -390,6 +394,21 @@ def main() -> int:
         quick_action.triggered.connect(
             lambda: _toggle_window(compact_window)
         )
+        stop_action.triggered.connect(porter.cancelCurrent)
+
+        def sync_stop_action() -> None:
+            stop_action.setText(
+                "Stopping current task…"
+                if porter.cancelling
+                else "Stop current task"
+            )
+            stop_action.setEnabled(
+                porter.busy and not porter.cancelling
+            )
+
+        porter.busyChanged.connect(sync_stop_action)
+        porter.cancellingChanged.connect(sync_stop_action)
+        sync_stop_action()
 
         def tray_listen_toggled(enabled: bool) -> None:
             if enabled != porter.listening:
@@ -399,10 +418,19 @@ def main() -> int:
 
         def sync_listening_action() -> None:
             listen_action.blockSignals(True)
-            listen_action.setChecked(porter.listening)
+            listen_action.setChecked(porter.handsFreeActive)
+            listen_action.setEnabled(
+                not porter.manualVoiceActive
+                and not porter.busy
+                and not porter.cancelling
+            )
             listen_action.blockSignals(False)
 
         porter.listeningChanged.connect(sync_listening_action)
+        porter.manualVoiceActiveChanged.connect(sync_listening_action)
+        porter.busyChanged.connect(sync_listening_action)
+        porter.cancellingChanged.connect(sync_listening_action)
+        sync_listening_action()
         quit_action.triggered.connect(app.quit)
         porter.quitRequested.connect(app.quit)
 
