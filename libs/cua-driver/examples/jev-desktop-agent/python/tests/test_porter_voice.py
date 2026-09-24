@@ -14,6 +14,7 @@ from porter_voice import (
     HandsFreeVoiceService,
     VoiceCaptureEngine,
 )
+from voice import LocalSpeaker
 
 
 class FakeMicrophone:
@@ -92,6 +93,37 @@ class FakeRuntime:
 
 
 class PorterVoiceTest(unittest.TestCase):
+
+    def test_local_speaker_interrupt_is_idempotent(self):
+        class FakeProcess:
+            def __init__(self):
+                self.terminated = 0
+                self.waited = 0
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated += 1
+
+            def kill(self):
+                raise AssertionError("kill should not be needed")
+
+            def wait(self, timeout=None):
+                self.waited += 1
+                return 0
+
+        speaker = LocalSpeaker(enabled=True)
+        process = FakeProcess()
+        speaker._process = process
+
+        speaker._interrupt_sync()
+        speaker._interrupt_sync()
+
+        self.assertEqual(process.terminated, 1)
+        self.assertGreaterEqual(process.waited, 1)
+        self.assertIsNone(speaker._process)
+
     def test_speech_is_detected_transcribed_and_submitted_without_button(self):
         runtime = FakeRuntime()
         client = FakeClient("Open Firefox")
