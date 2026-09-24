@@ -324,7 +324,7 @@ class RuntimeTest(unittest.TestCase):
         capture_calls = []
 
         class FakeCaptureEngine:
-            def __init__(self, runtime, client, config):
+            def __init__(self, runtime, client, config, *, pause_event=None):
                 capture_calls.append(("init", config))
 
             async def capture_once(self, *, stop_event, mode):
@@ -394,8 +394,8 @@ class RuntimeTest(unittest.TestCase):
         agents = []
 
         class BlockingCaptureEngine:
-            def __init__(self, runtime, client, config):
-                pass
+            def __init__(self, runtime, client, config, *, pause_event=None):
+                self.pause_event = pause_event
 
             async def capture_once(self, *, stop_event, mode):
                 capture_started.set()

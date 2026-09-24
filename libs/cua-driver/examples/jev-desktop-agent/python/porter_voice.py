@@ -53,10 +53,12 @@ class VoiceCaptureEngine:
         config: HandsFreeVoiceConfig,
         *,
         microphone_factory: Callable[..., Microphone] = Microphone,
+        pause_event: threading.Event | None = None,
     ) -> None:
         self.runtime = runtime
         self.client = client
         self.config = config
+        self.pause_event = pause_event
         self.microphone = microphone_factory(
             device=config.microphone_device,
             max_seconds=config.max_seconds,
@@ -138,6 +140,7 @@ class VoiceCaptureEngine:
             wav = await asyncio.to_thread(
                 self.microphone.record,
                 stop_event=stop_event,
+                pause_event=self.pause_event,
                 on_speech_start=on_speech_start,
                 on_level=on_level,
             )
@@ -253,6 +256,7 @@ class HandsFreeVoiceService:
             client,
             self.config,
             microphone_factory=microphone_factory,
+            pause_event=runtime.tts_pause_event,
         )
         self._stop = threading.Event()
         self._task: asyncio.Task | None = None
@@ -326,6 +330,10 @@ class HandsFreeVoiceService:
     async def _run(self) -> None:
         try:
             while not self._stop.is_set():
+                pause_event = self.runtime.tts_pause_event
+                if pause_event.is_set():
+                    await asyncio.sleep(0.05)
+                    continue
                 result = await self.capture.capture_once(
                     stop_event=self._stop,
                     mode="hands_free",

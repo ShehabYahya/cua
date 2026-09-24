@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -61,9 +62,11 @@ class FailingClient:
 class FakeRuntime:
     def __init__(self, *, busy: bool = False) -> None:
         self._busy = busy
+        self.tts_pause_event = threading.Event()
         self.events = []
         self.submitted = []
         self.cancelled = 0
+        self.tts_pause_event = threading.Event()
 
     @property
     def busy(self) -> bool:
@@ -123,6 +126,57 @@ class PorterVoiceTest(unittest.TestCase):
         self.assertEqual(process.terminated, 1)
         self.assertGreaterEqual(process.waited, 1)
         self.assertIsNone(speaker._process)
+
+    def test_local_speaker_uses_configured_tts_api_and_pauses_capture(self):
+        pause_event = threading.Event()
+        speaker = LocalSpeaker(
+            enabled=True,
+            api_base="http://127.0.0.1:9393/v1/",
+            model="local-tts",
+            voice="Vivian",
+            language="English",
+            instructions="Speak clearly.",
+            pause_event=pause_event,
+        )
+        response = Mock()
+        response.content = b"wav-data"
+        process = Mock()
+
+        def post(url, **kwargs):
+            self.assertEqual(url, "http://127.0.0.1:9393/v1/audio/speech")
+            self.assertTrue(pause_event.is_set())
+            return response
+
+        def popen(command, **kwargs):
+            self.assertTrue(pause_event.is_set())
+            self.assertEqual(command[0], "/usr/bin/aplay")
+            return process
+
+        with (
+            patch("httpx.post", side_effect=post) as http_post,
+            patch(
+                "voice.shutil.which",
+                side_effect=lambda name: "/usr/bin/aplay" if name == "aplay" else None,
+            ),
+            patch("voice.subprocess.Popen", side_effect=popen),
+        ):
+            asyncio.run(speaker.say("Hello from Porter"))
+
+        response.raise_for_status.assert_called_once_with()
+        http_post.assert_called_once_with(
+            "http://127.0.0.1:9393/v1/audio/speech",
+            json={
+                "model": "local-tts",
+                "input": "Hello from Porter",
+                "voice": "Vivian",
+                "language": "English",
+                "response_format": "wav",
+                "instructions": "Speak clearly.",
+            },
+            timeout=360,
+        )
+        process.wait.assert_called_once_with(timeout=360.0)
+        self.assertFalse(pause_event.is_set())
 
     def test_speech_is_detected_transcribed_and_submitted_without_button(self):
         runtime = FakeRuntime()

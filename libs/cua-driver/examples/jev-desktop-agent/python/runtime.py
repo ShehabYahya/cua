@@ -48,6 +48,12 @@ class PorterRuntimeConfig:
     enforce_policy: bool = False
     allow_foreground: bool = True
     visual_click_mode: str = "strict"
+    tts_enabled: bool = True
+    tts_api_base: str = "http://127.0.0.1:9393/v1"
+    tts_model: str = "qwen3-tts-1.7b-customvoice"
+    tts_voice: str = "Vivian"
+    tts_language: str = "English"
+    tts_instructions: str = ""
     telemetry: TelemetryConfig | None = None
 
     def resolved_download_root(self) -> str | None:
@@ -95,6 +101,8 @@ class PorterRuntime:
         self._openrouter: OpenRouterClient | None = None
         self._agent: AgentLoop | None = None
         self._voice_service: HandsFreeVoiceService | None = None
+        self._tts_pause = threading.Event()
+        self._speaker = None
         self._one_shot_voice_task: asyncio.Task | None = None
         self._one_shot_stop_event = None
         self._voice_config = HandsFreeVoiceConfig()
@@ -210,6 +218,14 @@ class PorterRuntime:
         stack = contextlib.AsyncExitStack()
         await stack.__aenter__()
         try:
+            from voice import LocalSpeaker
+            self._speaker = LocalSpeaker(
+                self.config.tts_enabled, api_base=self.config.tts_api_base,
+                model=self.config.tts_model, voice=self.config.tts_voice,
+                language=self.config.tts_language,
+                instructions=self.config.tts_instructions,
+                pause_event=self._tts_pause,
+            )
             chooser = self._chooser_factory(
                 self.config.provider,
                 model=self.config.jev_model,
@@ -412,6 +428,8 @@ class PorterRuntime:
                     result.completed_subgoals,
                 )
             else:
+                if self._speaker is not None and self.config.tts_enabled:
+                    await self._speaker.say(result.message)
                 terminal_kind = "command_completed"
                 terminal_message = result.message
                 terminal_data = {
@@ -461,6 +479,8 @@ class PorterRuntime:
             return False
         self._cancelling = True
         event.set()
+        if self._speaker is not None:
+            self._speaker.interrupt_now()
         self._capture("cancel_requested")
         self._emit(
             "command_cancel_requested",
@@ -473,6 +493,10 @@ class PorterRuntime:
     def hands_free_enabled(self) -> bool:
         service = self._voice_service
         return bool(service is not None and service.running)
+
+    @property
+    def tts_pause_event(self) -> threading.Event:
+        return self._tts_pause
 
     async def start_hands_free(
         self,
@@ -563,6 +587,7 @@ class PorterRuntime:
                     self,
                     self._openrouter,
                     selected,
+                    pause_event=self.tts_pause_event,
                 )
                 captured = await engine.capture_once(
                     stop_event=stop_event,

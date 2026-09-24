@@ -151,7 +151,8 @@ jobs:
 
       - name: Verify Porter version
         run: |
-          test "$(uv run --extra gui python python/porter_app.py --version)" = "Porter 0.1.0"
+          VERSION="$(PYTHONPATH=python python3 -c 'from version import __version__; print(__version__)')"
+          test "$(uv run --extra gui python python/porter_app.py --version)" = "Porter $VERSION"
 
       - name: Load Aurora Dark QML offscreen
         env:

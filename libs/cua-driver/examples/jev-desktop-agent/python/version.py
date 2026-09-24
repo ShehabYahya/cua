@@ -2,7 +2,7 @@ from __future__ import annotations
 
 APP_ID = "io.github.shehabyahya.Porter"
 APP_NAME = "Porter"
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 GITHUB_REPOSITORY = "ShehabYahya/cua"
 RELEASE_TAG_PREFIX = "porter-v"
