@@ -473,7 +473,7 @@ ApplicationWindow {
                                             anchors.right: parent.right
                                             anchors.rightMargin: 8
                                             anchors.verticalCenter: parent.verticalCenter
-                                            width: 104
+                                            width: 42
                                             height: 42
                                             visible: porter.busy || porter.cancelling
                                             cancelling: porter.cancelling
@@ -541,8 +541,10 @@ ApplicationWindow {
                                         }
 
                                         AuroraButton {
-                                            text: porter.listening ? "Mute" : "Enable"
+                                            text: porter.handsFreeActive ? "Mute" : "Enable"
                                             enabled: !porter.busy
+                                                && !porter.cancelling
+                                                && !porter.manualVoiceActive
                                             onClicked: porter.toggleListening()
                                         }
                                     }
