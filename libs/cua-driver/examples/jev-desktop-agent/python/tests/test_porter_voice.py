@@ -62,6 +62,7 @@ class FailingClient:
 class FakeRuntime:
     def __init__(self, *, busy: bool = False) -> None:
         self._busy = busy
+        self.tts_pause_event = threading.Event()
         self.events = []
         self.submitted = []
         self.cancelled = 0
