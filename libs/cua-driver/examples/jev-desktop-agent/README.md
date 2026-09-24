@@ -405,11 +405,21 @@ clean Ubuntu runner before the package is accepted.
 The release identity is `porter-v0.1.1`. Release notes live in
 `packaging/RELEASE_NOTES_0.1.1.md`.
 
-The `Release: Porter` GitHub Actions workflow can be run manually after this
-branch is on the default branch, or automatically by pushing a matching
-`porter-v*` tag. It verifies that the requested release version matches
-`python/version.py`, builds and smoke-tests the real package, creates
-`porter_SHA256SUMS.txt`, and publishes both files to the GitHub release.
+The `Release: Porter` GitHub Actions workflow can be run manually from the
+default branch or automatically from a matching `porter-v*` tag. It verifies
+that the requested release version matches `python/version.py`, builds and
+smoke-tests the real package, creates `porter_SHA256SUMS.txt`, and publishes
+both files to the GitHub release. Curated notes in
+`packaging/RELEASE_NOTES_<version>.md` are used when present; otherwise GitHub
+generates the release notes.
+
+When a Porter-related pull request is merged, `CD: Auto Release on Merge`
+reads its changed-file list and labels, updates only `python/version.py` in a
+release commit, creates the matching immutable `porter-v*` tag, and dispatches
+the publisher against that tag. `no-release` skips the automatic release;
+`bump:major` and `bump:minor` select those version bumps, with patch as the
+default. The Porter path uses this repository's Actions token and does not
+depend on upstream release-owner labels or App credentials.
 
 Porter's About & Updates page checks GitHub releases on demand and only considers
 tags with the `porter-v` prefix, so unrelated Cua repository releases do not

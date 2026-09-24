@@ -50,6 +50,12 @@ jobs:
           version: "0.8.15"
           enable-cache: true
 
+      - name: Resolve canonical Porter version
+        id: porter-version
+        run: |
+          VERSION="$(PYTHONPATH=python python3 -c 'from version import __version__; print(__version__)')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Install build and runtime libraries
         run: |
           sudo apt-get update
@@ -66,11 +72,11 @@ jobs:
             patchelf
 
       - name: Build Porter deb
-        run: bash packaging/linux/build-deb.sh 0.1.1
+        run: bash packaging/linux/build-deb.sh "${{ steps.porter-version.outputs.version }}"
 
       - name: Inspect package contents
         run: |
-          DEB="$(find dist -maxdepth 1 -name 'porter_0.1.1_*.deb' -print -quit)"
+          DEB="$(find dist -maxdepth 1 -name 'porter_${{ steps.porter-version.outputs.version }}_*.deb' -print -quit)"
           test -n "$DEB"
           dpkg-deb --info "$DEB"
           dpkg-deb --contents "$DEB" | tee /tmp/porter-package-contents.txt
@@ -92,9 +98,9 @@ jobs:
         run: |
           rm -rf /tmp/porter-deb-check
           mkdir -p /tmp/porter-deb-check
-          DEB="$(find dist -maxdepth 1 -name 'porter_0.1.1_*.deb' -print -quit)"
+          DEB="$(find dist -maxdepth 1 -name 'porter_${{ steps.porter-version.outputs.version }}_*.deb' -print -quit)"
           dpkg-deb -x "$DEB" /tmp/porter-deb-check
-          /tmp/porter-deb-check/usr/libexec/porter/porter --version | grep -q '^Porter 0.1.1$'
+          /tmp/porter-deb-check/usr/libexec/porter/porter --version | grep -q '^Porter ${{ steps.porter-version.outputs.version }}$'
           /tmp/porter-deb-check/usr/libexec/porter/porter --smoke-test
 
       - name: Validate desktop and AppStream metadata
@@ -110,12 +116,12 @@ jobs:
           OPENROUTER_API_KEY: ""
           TYPESAFE_API_KEY: ""
         run: |
-          DEB="$(find dist -maxdepth 1 -name 'porter_0.1.1_*.deb' -print -quit)"
+          DEB="$(find dist -maxdepth 1 -name 'porter_${{ steps.porter-version.outputs.version }}_*.deb' -print -quit)"
           sudo apt-get install -y "$PWD/$DEB"
-          test "$(porter --version)" = "Porter 0.1.1"
+          test "$(porter --version)" = "Porter ${{ steps.porter-version.outputs.version }}"
           porter --smoke-test
           sudo apt-get install -y --reinstall "$PWD/$DEB"
-          test "$(porter --version)" = "Porter 0.1.1"
+          test "$(porter --version)" = "Porter ${{ steps.porter-version.outputs.version }}"
           sudo apt-get remove -y porter-desktop
           test ! -e /usr/libexec/porter/porter
           test ! -e /usr/bin/porter
