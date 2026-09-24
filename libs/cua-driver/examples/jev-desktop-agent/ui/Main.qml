@@ -258,7 +258,7 @@ ApplicationWindow {
 
                             Column {
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - 50
+                                width: parent.width - 50 - (porter.busy ? 52 : 0)
                                 spacing: 4
 
                                 Text {
@@ -277,6 +277,14 @@ ApplicationWindow {
                                     font.pixelSize: 11
                                     elide: Text.ElideRight
                                 }
+                            }
+
+                            PorterStopButton {
+                                width: 42
+                                height: 42
+                                visible: porter.busy || porter.cancelling
+                                cancelling: porter.cancelling
+                                onStopRequested: porter.cancelCurrent()
                             }
                         }
                     }
@@ -378,8 +386,10 @@ ApplicationWindow {
                                         placeholderTextColor: "#5F7593"
                                         font.pixelSize: 15
                                         leftPadding: 18
-                                        rightPadding: 128
+                                        rightPadding: 172
                                         enabled: !porter.busy
+                                            && !porter.cancelling
+                                            && !porter.manualVoiceActive
                                         selectByMouse: true
                                         activeFocusOnTab: true
 
@@ -408,15 +418,66 @@ ApplicationWindow {
                                             }
                                         }
 
+                                        ToolButton {
+                                            id: homeVoiceButton
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 120
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 42
+                                            height: 42
+                                            visible: !porter.handsFreeActive && !porter.busy
+                                            enabled: !porter.cancelling
+                                            hoverEnabled: true
+                                            text: porter.manualVoiceActive ? "●" : "◉"
+                                            Accessible.name: porter.manualVoiceActive
+                                                ? "Cancel voice recording"
+                                                : "Speak one command"
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: Accessible.name
+                                            ToolTip.delay: 450
+
+                                            contentItem: Text {
+                                                text: homeVoiceButton.text
+                                                color: porter.manualVoiceActive
+                                                    ? settingsModel.accentColor
+                                                    : "#8AA3C2"
+                                                font.pixelSize: 18
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+
+                                            background: Rectangle {
+                                                radius: 12
+                                                color: homeVoiceButton.hovered
+                                                    ? Qt.rgba(0.10, 0.34, 0.56, 0.28)
+                                                    : "transparent"
+                                            }
+
+                                            onClicked: porter.toggleOneShotListening()
+                                        }
+
                                         AuroraButton {
                                             anchors.right: parent.right
                                             anchors.rightMargin: 8
                                             anchors.verticalCenter: parent.verticalCenter
                                             width: 104
-                                            text: porter.busy ? "Working" : "Run"
+                                            visible: !porter.busy
+                                            text: "Run"
                                             primary: true
-                                            enabled: !porter.busy
+                                            enabled: !porter.cancelling
+                                                && !porter.manualVoiceActive
                                             onClicked: commandField.accepted()
+                                        }
+
+                                        PorterStopButton {
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 8
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 104
+                                            height: 42
+                                            visible: porter.busy || porter.cancelling
+                                            cancelling: porter.cancelling
+                                            onStopRequested: porter.cancelCurrent()
                                         }
                                     }
                                 }
@@ -517,12 +578,6 @@ ApplicationWindow {
 
                                     RowLayout {
                                         Layout.fillWidth: true
-
-                                        AuroraButton {
-                                            text: "Cancel current task"
-                                            enabled: porter.busy
-                                            onClicked: porter.cancelCurrent()
-                                        }
 
                                         Item { Layout.fillWidth: true }
 
