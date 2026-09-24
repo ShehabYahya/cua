@@ -5,6 +5,7 @@ import contextlib
 import os
 import platform
 import sys
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -295,9 +296,9 @@ class PorterRuntime:
             return
         self._emit("runtime_stopping", "Stopping Porter runtime…")
 
+        self.cancel()
         await self.cancel_listen_once()
         await self.stop_hands_free()
-        self.cancel()
 
         if self._command_lock.locked():
             async def wait_until_idle() -> None:
@@ -547,7 +548,6 @@ class PorterRuntime:
             raise PorterBusyError("A voice recording is already active.")
 
         selected = config or self._voice_config
-        threading = __import__("threading")
         stop_event = threading.Event()
         self._one_shot_stop_event = stop_event
         self._voice_config = selected
