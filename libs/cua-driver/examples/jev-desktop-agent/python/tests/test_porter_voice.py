@@ -9,7 +9,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from porter_voice import HandsFreeVoiceConfig, HandsFreeVoiceService
+from porter_voice import (
+    HandsFreeVoiceConfig,
+    HandsFreeVoiceService,
+    VoiceCaptureEngine,
+)
 
 
 class FakeMicrophone:
@@ -174,26 +178,55 @@ class PorterVoiceTest(unittest.TestCase):
         self.assertIn("voice_transcription_failed", kinds)
         self.assertNotIn("voice_error", kinds)
 
-    def test_microphone_level_events_are_throttled(self):
+    def test_shared_capture_engine_records_one_utterance(self):
         runtime = FakeRuntime()
-        service = HandsFreeVoiceService(
+        client = FakeClient("Open Settings")
+        engine = VoiceCaptureEngine(
             runtime,
-            FakeClient("unused"),
+            client,
+            HandsFreeVoiceConfig(enabled=False),
             microphone_factory=FakeMicrophone,
         )
 
         async def scenario():
-            service._loop = asyncio.get_running_loop()
-            for _ in range(100):
-                service._on_level(0.04, 0.02)
-            await asyncio.sleep(0)
+            stop = threading.Event()
+            result = await engine.capture_once(
+                stop_event=stop,
+                mode="one_shot",
+            )
+            self.assertIsNotNone(result)
+            self.assertEqual(result.transcript, "Open Settings")
 
         asyncio.run(scenario())
 
+        self.assertEqual(client.calls, 1)
         levels = [
             event for event in runtime.events if event[0] == "voice_level"
         ]
         self.assertEqual(len(levels), 1)
+        self.assertEqual(levels[0][2]["mode"], "one_shot")
+
+    def test_cancelled_one_shot_discards_capture_before_stt(self):
+        runtime = FakeRuntime()
+        client = FakeClient("should not submit")
+        engine = VoiceCaptureEngine(
+            runtime,
+            client,
+            HandsFreeVoiceConfig(enabled=False),
+            microphone_factory=FakeMicrophone,
+        )
+
+        async def scenario():
+            stop = threading.Event()
+            stop.set()
+            result = await engine.capture_once(
+                stop_event=stop,
+                mode="one_shot",
+            )
+            self.assertIsNone(result)
+
+        asyncio.run(scenario())
+        self.assertEqual(client.calls, 0)
 
 
 if __name__ == "__main__":
