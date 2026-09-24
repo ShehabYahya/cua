@@ -330,7 +330,7 @@ class HandsFreeVoiceService:
                     and not self._active_command.done()
                 )
 
-                if active or self.runtime.busy or self.runtime.cancelling:
+                if active or self.runtime.busy or getattr(self.runtime, "cancelling", False):
                     if normalized in _CANCEL_PHRASES:
                         self.runtime.cancel()
                         self.runtime.emit_event(
