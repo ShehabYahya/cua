@@ -375,7 +375,7 @@ jobs:
           echo "SLACK_COLOR=${SLACK_COLOR}" >> $GITHUB_ENV
 
       - name: Send summary to Slack
-        if: always()
+        if: always() && env.SLACK_WEBHOOK != ''
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
