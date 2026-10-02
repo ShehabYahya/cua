@@ -199,11 +199,19 @@ def _hotkey_candidates(
         (("go back", "back"), "hotkey-back", ["cmd", "["] if sys.platform == "darwin" else ["alt", "left"], "Go back."),
     ]
     out: list[Candidate] = []
+    capabilities: list[Candidate] = []
     for needles, cid, keys, description in mapping:
-        if (is_browser and cid in browser_actions) or any(
+        requested = any(
             needle in normalized for needle in needles
-        ):
-            out.append(
+        ) or (
+            cid == "hotkey-address" and is_browser
+            and bool(_words(goal) & {"search", "navigate", "browse"})
+        )
+        if requested or (is_browser and cid in browser_actions):
+            # Preserve recovery keys in bounded pools. Exact wording affects
+            # ordering only; it never excludes a supported browser action.
+            destination = out if requested else capabilities
+            destination.append(
                 apply_risk(
                     Candidate(
                         cid,
@@ -288,7 +296,7 @@ def _hotkey_candidates(
                 source="shortcut",
             )
         )
-    return out
+    return out + capabilities
 
 
 def _scroll_candidates(
