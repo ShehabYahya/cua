@@ -31,6 +31,7 @@ from porter_voice import (
 from writer import OpenRouterWriter
 from telemetry import Telemetry, TelemetryConfig
 from telemetry_agent import TelemetryAgentLoop
+from retrieval import create_retriever
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,9 @@ class PorterRuntimeConfig:
     writer_model: str = DEFAULT_REASONING_MODEL
     max_steps: int = 30
     max_candidates: int = 32
+    retrieval_mode: str = "hybrid"
+    embedding_model_dir: str | None = None
+    retrieval_cache_path: str | None = None
     download_root: str | None = None
     enforce_policy: bool = False
     allow_foreground: bool = True
@@ -84,6 +88,7 @@ class PorterRuntime:
         driver_factory: Callable[[], Any] = CuaMcpDriver,
         openrouter_factory: Callable[[], OpenRouterClient] = OpenRouterClient,
         agent_factory: Callable[..., AgentLoop] = AgentLoop,
+        retriever_factory=None,
     ) -> None:
         self.config = config or PorterRuntimeConfig()
         self.events = RuntimeEventBus()
@@ -94,6 +99,7 @@ class PorterRuntime:
         self._driver_factory = driver_factory
         self._openrouter_factory = openrouter_factory
         self._agent_factory = agent_factory
+        self._retriever_factory = retriever_factory or create_retriever
 
         self._stack: contextlib.AsyncExitStack | None = None
         self._driver = None
@@ -211,6 +217,19 @@ class PorterRuntime:
             command_id=self._active_command_id,
         )
 
+    def _activity(self, step: int, selected_id: str, confidence: float,
+                  activity: Any) -> None:
+        self._emit(
+            "agent_step",
+            activity.text,
+            command_id=self._active_command_id,
+            step=step,
+            category=activity.category,
+            label=activity.label,
+            selected_id=selected_id,
+            confidence=round(float(confidence or 0.0), 3),
+        )
+
     async def start(self) -> None:
         if self._started:
             return
@@ -276,6 +295,17 @@ class PorterRuntime:
                 # Custom agent factories need their own hooks; never imply a
                 # lifecycle-only capture is a complete decision trace.
                 self._telemetry.invalidate()
+            retrieval_mode = os.getenv("PORTER_RETRIEVAL", self.config.retrieval_mode).strip().casefold()
+            if retrieval_mode == "hybrid":
+                retriever = self._retriever_factory(
+                    model_dir=self.config.embedding_model_dir,
+                    cache_path=self.config.retrieval_cache_path,
+                )
+                stack.push_async_callback(asyncio.to_thread, retriever.encoder.close)
+                await asyncio.to_thread(retriever.encoder.load)
+                telemetry_args["retriever"] = retriever
+            elif retrieval_mode != "lexical":
+                raise ValueError("PORTER_RETRIEVAL must be lexical or hybrid")
             agent = agent_factory(
                 driver,
                 chooser,
@@ -285,6 +315,7 @@ class PorterRuntime:
                 max_candidates=self.config.max_candidates,
                 download_root=self.config.resolved_download_root(),
                 progress=self._progress,
+                activity=self._activity,
                 enforce_policy=self.config.enforce_policy,
                 visual_click_mode=self.config.visual_click_mode,
                 **telemetry_args,

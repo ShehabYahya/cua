@@ -191,6 +191,63 @@ For voice mode:
 uv sync --extra voice
 ```
 
+Porter uses local hybrid retrieval by default. Install the GUI and point it at
+your local BGE-M3 ONNX assets:
+
+```bash
+uv sync --extra app
+export PORTER_EMBEDDING_MODEL_DIR=/absolute/path/to/bge-m3/onnx
+uv run --extra app python python/porter_app.py
+```
+
+The directory must contain the BGE-M3 ONNX `model.onnx`, its external weight
+files, and `tokenizer.json` with a `sentence_embedding` output. This path runs
+on CPU and adds no retrieval service or extra Jev calls. It combines cached
+contextual vectors with fuzzy lexical matching and protects resolved target
+groups. The usual shortlist is at most 10 options including recovery choices;
+ambiguous targets can widen it to the configured `max_candidates` ceiling
+(at most 32). "More actions" pages through unseen fresh candidates and disappears
+when the current pool is exhausted. Paging and refresh both count toward the
+configured decision budget. The chat labels paging as "More options" separately
+from taking a fresh observation.
+
+Supported browser shortcuts are generated from the observed browser's
+capabilities before ranking, independently of exact instruction wording. For
+example, `open new tap in firefox` still offers the new-tab action. Jev receives
+the original instruction, and requested text is never rewritten by retrieval.
+
+Without an override, model assets are resolved under Porter's application data
+directory (`~/.local/share/porter/models/bge-m3/onnx` on Linux). Missing assets
+produce an explicit startup error. Porter never silently substitutes lexical
+ranking; `PORTER_RETRIEVAL=lexical` is an explicit override.
+
+Vectors are cached in SQLite at
+`~/.cache/porter/retrieval/vectors-v1.sqlite3` on Linux. Windows uses
+`%LOCALAPPDATA%/Porter/Cache/retrieval`; macOS uses
+`~/Library/Caches/Porter/retrieval`. Linux follows `XDG_CACHE_HOME` when set.
+Override the full database path with `PORTER_VECTOR_CACHE_PATH`.
+
+Every fresh observation reconciles its candidate descriptions with the cache:
+
+- New and changed descriptions are embedded once and saved.
+- Identical descriptions reuse vectors across commands and process restarts.
+- Missing controls leave the current window's active set. Their vectors can be
+  retained for reuse when the controls reappear.
+- Partial/degraded observations keep historical membership separate from the
+  current generation; historical entries are never executable choices.
+- Missing vector rows are rebuilt from RAM or recomputed, and invalid rows are
+  discarded on database lookup. Model/encoder changes use a new namespace.
+
+The database stores description hashes, normalised vectors, and membership
+hashes. It stores no plaintext labels, queries, payloads, element tokens, or
+executable action arguments. The RAM LRU holds at most 8192 vectors and SQLite
+holds at most 32768 vectors and 256 window scopes. Query vectors remain in RAM.
+Executable actions are always rebuilt from the current observation; literal
+payloads are never spelling corrected. The first index build can take tens of
+seconds; subsequent processes reuse the database. No completed desktop-task
+qualification has been performed for this path. Updating source does not
+replace an installed Porter package.
+
 Set your OpenRouter key locally. Do **not** paste it into chat or commit it:
 
 ```bash

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, replace
 from typing import Callable, Mapping
 
+from activity import Activity, describe
 from candidates import build_candidates, shortlist_candidates
 from contracts import (
     ABSTAIN,
@@ -95,15 +97,18 @@ class AgentLoop:
         *,
         writer=None,
         perceiver=None,
+        activity: Callable[[int, str, float, Activity], None] | None = None,
         max_steps: int = 30,
         max_candidates: int = 32,
         download_root: str | None = None,
         progress: Callable[[str], None] | None = None,
         enforce_policy: bool = False,
         visual_click_mode: str = "strict",
+        retriever=None,
     ) -> None:
         self._driver = driver
         self._chooser = chooser
+        self._retriever = retriever
         self._writer = writer
         self._perceiver = perceiver if perceiver is not None else NoopPerceiver()
         self._max_steps = max(1, int(max_steps))
@@ -111,6 +116,7 @@ class AgentLoop:
         self._download_root = download_root
         self._download_tracker = DownloadTracker(download_root)
         self._progress_callback = progress
+        self._activity_cb = activity
         self._enforce_policy = enforce_policy
         if visual_click_mode not in {"strict", "permissive"}:
             raise ValueError(
@@ -130,6 +136,19 @@ class AgentLoop:
             self._progress_callback(message)
         except Exception:
             pass
+
+    def _activity(self, step: int, selected: Candidate, confidence: float) -> None:
+        if self._activity_cb is None:
+            return
+        try:
+            activity = describe(
+                selected_id=selected.id,
+                tool=selected.tool,
+                description=selected.description,
+            )
+            self._activity_cb(step, selected.id, float(confidence or 0.0), activity)
+        except Exception:
+            pass  # activity reporting must never break the loop
 
     @property
     def recent_context(self) -> tuple[str, ...]:
@@ -823,6 +842,7 @@ class AgentLoop:
         launch_name: str | None = None
         slots = self._local_slots(goal)
         page = 0
+        offered_ids: set[str] = set()
         history: list[StepRecord] = []
         failed_routes: dict[str, str] = {}
         inspected: set[tuple[tuple[int, int], str]] = set()
@@ -860,6 +880,7 @@ class AgentLoop:
                 if current.fingerprint() != prior_fingerprint:
                     # A real state change invalidates paging and refresh pressure.
                     page = 0
+                    offered_ids.clear()
                     refreshes = 0
                 fresh = False
 
@@ -947,15 +968,34 @@ class AgentLoop:
                 candidate for candidate in pool if candidate.id not in suppressed
             ]
             observation = self._annotate(current, inventory, self.recent_context)
-            shortlist = shortlist_candidates(
-                goal,
-                pool,
-                limit=min(self._max_candidates, 32),
-                page=page,
-            )
+            if self._retriever is not None:
+                shortlist = await asyncio.to_thread(
+                    shortlist_candidates, goal, pool,
+                    limit=min(self._max_candidates, 32), page=page,
+                    retriever=self._retriever, observation=observation,
+                    prepared_texts=tuple(slots), history=tuple(history),
+                    seen_candidate_ids=frozenset(offered_ids),
+                )
+            else:
+                shortlist = shortlist_candidates(
+                    goal, pool, limit=min(self._max_candidates, 32), page=page,
+                    seen_candidate_ids=frozenset(offered_ids),
+                )
+            if cancelled():
+                return stop("cancelled", "Cancelled by the user.", history)
+            if page > 0 and not any(
+                c.id not in {DONE, ABSTAIN, REOBSERVE, MORE_ACTIONS}
+                for c in shortlist
+            ):
+                return stop(
+                    "abstained",
+                    "No unseen actions remain for the current window state.",
+                    history,
+                )
             self._progress(
                 f"Asking Jev with {len(shortlist)} of {len(pool)} candidate(s)."
             )
+            offered_ids.update(c.id for c in shortlist)
             decision = await self._chooser.choose(
                 # The original user instruction, unredacted: Jev must be able to
                 # compare the requested query/text with what it observes.
@@ -978,6 +1018,7 @@ class AgentLoop:
                 )
             step += 1
             self._progress(f"Jev selected {selected.id}: {selected.description}")
+            self._activity(step, selected, getattr(decision, "confidence", 0.0))
 
             def record(
                 outcome: str,
@@ -1009,6 +1050,7 @@ class AgentLoop:
                 apps_loaded = True
                 if apps:
                     page = 0
+                    offered_ids.clear()
                     history.append(record("apps_discovered"))
                 else:
                     failed_routes[selected.id] = context
@@ -1026,6 +1068,7 @@ class AgentLoop:
                 if produced:
                     # The pool just expanded; start its paging from the top.
                     page = 0
+                    offered_ids.clear()
                     history.append(record("text_prepared"))
                 else:
                     failed_routes[selected.id] = context
@@ -1063,6 +1106,7 @@ class AgentLoop:
                 inventory = read_inventory
                 if current.visual_regions:
                     page = 0
+                    offered_ids.clear()
                     history.append(record("inspected"))
                 else:
                     failed_routes[selected.id] = current.fingerprint()
@@ -1267,6 +1311,7 @@ class AgentLoop:
             else:
                 # A real state change invalidates paging and refresh pressure.
                 page = 0
+                offered_ids.clear()
                 refreshes = 0
             history.append(
                 record(
