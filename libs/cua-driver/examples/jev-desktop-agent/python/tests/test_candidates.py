@@ -35,7 +35,7 @@ class CandidateTest(unittest.TestCase):
         self.assertIn("click-1", {candidate.id for candidate in candidates})
 
     def test_new_tab_hotkey_is_also_available(self):
-        ids = {c.id for c in build_candidates("open a new tab", self.observation())}
+        ids = {c.id for c in build_candidates("open new tap in firefox", self.observation())}
         self.assertIn("hotkey-new-tab", ids)
 
     def test_prepared_text_is_local_argument_only(self):

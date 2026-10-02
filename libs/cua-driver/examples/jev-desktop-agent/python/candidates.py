@@ -140,11 +140,21 @@ def _hotkey_candidates(
     observation: Observation,
 ) -> list[Candidate]:
     normalized = " ".join(re.findall(r"[a-z0-9]+", goal.casefold()))
-    browser_search = bool(
-        _words(observation.app) & {"firefox", "chrome", "chromium", "edge", "brave", "safari"}
-        and _words(goal) & {"search", "navigate", "browse"}
+    is_browser = bool(
+        observation.pid
+        and (
+            observation.browser_target_id
+            or _words(observation.app) & {"firefox", "chrome", "chromium", "edge", "brave", "safari"}
+        )
     )
     browser_modifier = "cmd" if sys.platform == "darwin" else "ctrl"
+    # These are capabilities of the observed browser, independent of how the
+    # user spells an instruction. Retrieval ranks them; Jev still decides.
+    browser_actions = {
+        "hotkey-new-tab", "hotkey-address", "hotkey-close-tab",
+        "hotkey-reopen-tab", "hotkey-reload", "hotkey-new-window",
+        "hotkey-next-tab", "hotkey-previous-tab", "hotkey-back",
+    }
     mapping: list[tuple[tuple[str, ...], str, list[str], str]] = [
         (("new tab",), "hotkey-new-tab", [browser_modifier, "t"], "Open a new tab."),
         (
@@ -153,14 +163,14 @@ def _hotkey_candidates(
             [browser_modifier, "l"],
             "Focus the browser address bar.",
         ),
-        (("close tab",), "hotkey-close-tab", ["ctrl", "w"], "Close the current tab."),
+        (("close tab",), "hotkey-close-tab", [browser_modifier, "w"], "Close the current tab."),
         (
             ("reopen tab",),
             "hotkey-reopen-tab",
-            ["ctrl", "shift", "t"],
+            [browser_modifier, "shift", "t"],
             "Reopen the last closed tab.",
         ),
-        (("refresh", "reload"), "hotkey-reload", ["ctrl", "r"], "Reload the current view."),
+        (("refresh", "reload"), "hotkey-reload", [browser_modifier, "r"], "Reload the current view."),
         (("save",), "hotkey-save", ["ctrl", "s"], "Save the current document."),
         (
             ("select all",),
@@ -172,7 +182,7 @@ def _hotkey_candidates(
         (("paste",), "hotkey-paste", ["ctrl", "v"], "Paste clipboard contents."),
         (("undo",), "hotkey-undo", ["ctrl", "z"], "Undo the last action."),
         (("redo",), "hotkey-redo", ["ctrl", "shift", "z"], "Redo the last undone action."),
-        (("new window",), "hotkey-new-window", ["ctrl", "n"], "Open a new window."),
+        (("new window",), "hotkey-new-window", [browser_modifier, "n"], "Open a new window."),
         (
             ("open file", "open document"),
             "hotkey-open-file",
@@ -186,14 +196,22 @@ def _hotkey_candidates(
             ["ctrl", "shift", "tab"],
             "Switch to the previous tab.",
         ),
-        (("go back", "back"), "hotkey-back", ["alt", "left"], "Go back."),
+        (("go back", "back"), "hotkey-back", ["cmd", "["] if sys.platform == "darwin" else ["alt", "left"], "Go back."),
     ]
     out: list[Candidate] = []
+    capabilities: list[Candidate] = []
     for needles, cid, keys, description in mapping:
-        if any(needle in normalized for needle in needles) or (
-            cid == "hotkey-address" and browser_search
-        ):
-            out.append(
+        requested = any(
+            needle in normalized for needle in needles
+        ) or (
+            cid == "hotkey-address" and is_browser
+            and bool(_words(goal) & {"search", "navigate", "browse"})
+        )
+        if requested or (is_browser and cid in browser_actions):
+            # Preserve recovery keys in bounded pools. Exact wording affects
+            # ordering only; it never excludes a supported browser action.
+            destination = out if requested else capabilities
+            destination.append(
                 apply_risk(
                     Candidate(
                         cid,
@@ -278,7 +296,7 @@ def _hotkey_candidates(
                 source="shortcut",
             )
         )
-    return out
+    return out + capabilities
 
 
 def _scroll_candidates(
@@ -1222,6 +1240,11 @@ def shortlist_candidates(
     *,
     limit: int = 32,
     page: int = 0,
+    retriever=None,
+    observation: Observation | None = None,
+    prepared_texts: tuple[PreparedText, ...] = (),
+    history=(),
+    seen_candidate_ids: frozenset[str] = frozenset(),
 ) -> list[Candidate]:
     """Pick one bounded, deterministic, paged candidate set for a Jev round.
 
@@ -1232,11 +1255,19 @@ def shortlist_candidates(
     never return terminals alone. With two or more real slots the first stays
     reserved for session operations/bundles/keyboard/typing and the rest page
     over the remaining builder pool; with exactly one real slot that slot pages
-    across the whole selectable pool, so repeated `page` values still expose
-    different real actions and large trees never lose the tail permanently.
+    across the whole selectable pool. Paging does not wrap; the escape hatch
+    disappears when no unseen candidates remain in the current state.
     """
     if limit < 4:
         raise ValueError("shortlist limit must be at least 4")
+    if retriever is not None:
+        if observation is None:
+            raise ValueError("hybrid retrieval requires the current observation")
+        return retriever.select(
+            goal, candidates, observation=observation, texts=prepared_texts,
+            history=history, limit=limit, page=page,
+            seen_candidate_ids=seen_candidate_ids,
+        )
     page = max(0, int(page))
     goal_words = _words(goal)
 
@@ -1260,7 +1291,9 @@ def shortlist_candidates(
     # The paging escape hatch is not an executable action; hold it back so it
     # can never consume the slot reserved for a real action below.
     selectable = [
-        candidate for candidate in actions if candidate.id != "more-actions"
+        candidate for candidate in actions
+        if candidate.id != "more-actions"
+        and not (page > 0 and candidate.id in seen_candidate_ids)
     ]
     more_actions = [
         candidate for candidate in actions if candidate.id == "more-actions"
@@ -1352,15 +1385,19 @@ def shortlist_candidates(
 
     tail_room = max(0, real_room - len(chosen))
     window: list[Candidate] = []
+    start = 0
     if ordered_tail and tail_room > 0:
         stride = min(tail_room, len(ordered_tail))
-        start = (page * stride) % len(ordered_tail)
-        window = [
-            ordered_tail[(start + offset) % len(ordered_tail)]
-            for offset in range(stride)
-        ]
+        start = 0 if seen_candidate_ids else page * stride
+        window = ordered_tail[start:start + stride]
 
     selected = chosen + window
-    if more_actions_slot:
+    offered_ids = seen_candidate_ids | {candidate.id for candidate in selected}
+    has_more = (
+        any(candidate.id not in offered_ids for candidate in selectable)
+        if seen_candidate_ids
+        else start + len(window) < len(ordered_tail)
+    )
+    if more_actions_slot and has_more:
         selected = more_actions[:1] + selected
     return selected + terminals

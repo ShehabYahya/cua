@@ -110,6 +110,69 @@ class BlockingAgent(FakeAgent):
 
 
 class RuntimeTest(unittest.TestCase):
+    def setUp(self):
+        # Runtime lifecycle tests use no real embedding model or user cache.
+        self.encoder = SimpleNamespace(load=lambda: None, close=lambda: None)
+        self.retriever = SimpleNamespace(encoder=self.encoder)
+        self.retrieval_factory = patch("runtime.create_retriever", return_value=self.retriever)
+        self.retrieval_factory.start()
+        self.addCleanup(self.retrieval_factory.stop)
+
+    def test_hybrid_retrieval_is_default_and_cache_owner_is_closed(self):
+        closed, agents = [], []
+        encoder = SimpleNamespace(load=lambda: None, close=lambda: closed.append(True))
+        retriever = SimpleNamespace(encoder=encoder)
+        def agent_factory(*args, **kwargs):
+            agents.append(kwargs)
+            return FakeAgent(*args, **kwargs)
+        async def scenario():
+            runtime = PorterRuntime(
+                PorterRuntimeConfig(vision_enabled=False),
+                chooser_factory=lambda provider, model=None: FakeChooser(),
+                driver_factory=FakeDriver, agent_factory=agent_factory,
+                retriever_factory=lambda **kwargs: retriever,
+            )
+            await runtime.start()
+            await runtime.stop()
+        with patch.dict("os.environ", {"PORTER_RETRIEVAL": "hybrid", "OPENROUTER_API_KEY": ""}):
+            asyncio.run(scenario())
+        self.assertEqual(PorterRuntimeConfig().retrieval_mode, "hybrid")
+        self.assertIs(agents[0]["retriever"], retriever)
+        self.assertEqual(closed, [True])
+
+    def test_lexical_override_skips_embedding_model(self):
+        async def scenario():
+            runtime = PorterRuntime(
+                PorterRuntimeConfig(vision_enabled=False),
+                chooser_factory=lambda provider, model=None: FakeChooser(),
+                driver_factory=FakeDriver, agent_factory=FakeAgent,
+                retriever_factory=lambda **kwargs: self.fail("lexical mode loaded a model"),
+            )
+            await runtime.start()
+            await runtime.stop()
+        with patch.dict("os.environ", {"PORTER_RETRIEVAL": "lexical", "OPENROUTER_API_KEY": ""}):
+            asyncio.run(scenario())
+
+    def test_failed_model_load_closes_owned_cache_and_driver(self):
+        closed, driver = [], FakeDriver()
+        def fail_load():
+            raise RuntimeError("invalid local model")
+        encoder = SimpleNamespace(load=fail_load, close=lambda: closed.append(True))
+        async def scenario():
+            runtime = PorterRuntime(
+                PorterRuntimeConfig(vision_enabled=False),
+                chooser_factory=lambda provider, model=None: FakeChooser(),
+                driver_factory=lambda: driver, agent_factory=FakeAgent,
+                retriever_factory=lambda **kwargs: SimpleNamespace(encoder=encoder),
+            )
+            with self.assertRaisesRegex(RuntimeError, "invalid local model"):
+                await runtime.start()
+            self.assertFalse(runtime.started)
+        with patch.dict("os.environ", {"PORTER_RETRIEVAL": "hybrid", "OPENROUTER_API_KEY": ""}):
+            asyncio.run(scenario())
+        self.assertEqual(closed, [True])
+        self.assertTrue(driver.exited)
+
     def test_event_bus_observer_failure_is_isolated(self):
         bus = RuntimeEventBus()
         seen = []
