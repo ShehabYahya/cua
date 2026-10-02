@@ -181,7 +181,13 @@ class RetrievalTests(unittest.TestCase):
 
     def test_agent_loop_supplies_fresh_state_history_and_original_goal(self):
         from loop import AgentLoop
-        from tests.test_loop import FakeChooser, FakeDriver
+        from contracts import Decision
+        from tests.test_loop import FakeDriver
+        class CapabilityChooser:
+            async def choose(inner, *, observation, candidates, **kwargs):
+                selected = "done" if observation.window_title == "Search the web" else "hotkey-new-tab"
+                self.assertIn(selected, {c.id for c in candidates})
+                return Decision(selected, .99, {selected: .99})
         class RecordingRetriever(CandidateRetriever):
             def __init__(self):
                 super().__init__(Encoder())
@@ -190,9 +196,9 @@ class RetrievalTests(unittest.TestCase):
                 self.calls.append((goal, kwargs["observation"].snapshot_id, tuple(kwargs["history"])))
                 return super().select(goal, candidates, **kwargs)
         driver, retriever = FakeDriver(), RecordingRetriever()
-        result = asyncio.run(AgentLoop(driver, FakeChooser(), retriever=retriever, max_steps=4).run("open new tab", act=True))
+        result = asyncio.run(AgentLoop(driver, CapabilityChooser(), retriever=retriever, max_steps=4).run("open new tab", act=True))
         self.assertEqual(result.status, "completed")
-        self.assertEqual(driver.executed, ["click-1"])
+        self.assertEqual(driver.executed, ["hotkey-new-tab"])
         self.assertEqual([(g, s) for g, s, _ in retriever.calls], [("open new tab", "s1"), ("open new tab", "s2")])
         self.assertEqual(len(retriever.calls[1][2]), 1)
 
